@@ -15,6 +15,10 @@
         'New-InventoryComponentId'
         'New-AgentComponentCreatePlan'
         'Write-DataverseBatch'
+        'Start-InventorySyncRun'
+        'Complete-InventorySyncRun'
+        'Write-InventorySyncLog'
+        'Write-AgentSyncSkippedRun'
         'Invoke-AgentCreateSync'
         'Write-InventoryTrace'
     )

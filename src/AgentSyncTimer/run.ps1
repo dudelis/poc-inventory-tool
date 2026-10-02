@@ -1,18 +1,28 @@
 param($Timer, $TriggerMetadata, $DurableClient)
 
 $instanceId = 'agent-builder-inventory-sync'
+$correlationId = [guid]::NewGuid().ToString()
 $status = Get-DurableStatus -InstanceId $instanceId -DurableClient $DurableClient
 $activeStatuses = @('Pending', 'Running', 'ContinuedAsNew', 'Suspended')
 
 if ($null -ne $status -and [string] $status.RuntimeStatus -in $activeStatuses) {
-    Write-InventoryTrace -Level Warning -Message 'Agent sync start skipped because the singleton is active.' `
-        -CorrelationId $instanceId -Data @{
-            category      = 'RunSkipped'
-            instanceId    = $instanceId
-            runtimeStatus = [string] $status.RuntimeStatus
-        }
+    try {
+        $configuration = Get-InventorySyncConfiguration
+        Write-AgentSyncSkippedRun -Configuration $configuration `
+            -CorrelationId $correlationId -InstanceId $instanceId `
+            -RuntimeStatus ([string] $status.RuntimeStatus) | Out-Null
+    }
+    catch {
+        Write-InventoryTrace -Level Warning -Message 'Agent sync start skipped because the singleton is active.' `
+            -CorrelationId $correlationId -Data @{
+                category      = 'RunSkipped'
+                instanceId    = $instanceId
+                runtimeStatus = [string] $status.RuntimeStatus
+                loggingError  = $_.Exception.Message
+            }
+    }
     return
 }
 
 Start-DurableOrchestration -FunctionName 'AgentSyncOrchestrator' -InstanceId $instanceId `
-    -DurableClient $DurableClient | Out-Null
+    -InputObject @{ CorrelationId = $correlationId } -DurableClient $DurableClient | Out-Null

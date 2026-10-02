@@ -1,0 +1,126 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Entity xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <Name LocalizedName="Sync Log" OriginalName="Sync Log">invs_synclog</Name>
+  <EntityInfo>
+    <entity Name="invs_synclog">
+      <LocalizedNames>
+        <LocalizedName description="Sync Log" languagecode="1033" />
+      </LocalizedNames>
+      <LocalizedCollectionNames>
+        <LocalizedCollectionName description="Sync Logs" languagecode="1033" />
+      </LocalizedCollectionNames>
+      <Descriptions>
+        <Description description="One warning or error observed during an inventory synchronization run." languagecode="1033" />
+      </Descriptions>
+      <attributes>
+        <attribute PhysicalName="invs_SyncLogId">
+          <Type>primarykey</Type><Name>invs_synclogid</Name><LogicalName>invs_synclogid</LogicalName>
+          <RequiredLevel>systemrequired</RequiredLevel><IsCustomField>1</IsCustomField>
+          <displaynames><displayname description="Sync Log" languagecode="1033" /></displaynames>
+        </attribute>
+        <attribute PhysicalName="invs_Name">
+          <Type>nvarchar</Type><Name>invs_name</Name><LogicalName>invs_name</LogicalName>
+          <RequiredLevel>none</RequiredLevel><MaxLength>200</MaxLength><Format>text</Format>
+          <IsCustomField>1</IsCustomField>
+          <displaynames><displayname description="Name" languagecode="1033" /></displaynames>
+        </attribute>
+        <attribute PhysicalName="invs_SyncRunId">
+          <Type>lookup</Type><Name>invs_syncrunid</Name><LogicalName>invs_syncrunid</LogicalName>
+          <RequiredLevel>applicationrequired</RequiredLevel><LookupStyle>single</LookupStyle>
+          <LookupTypes><LookupType id="invs_syncrun">invs_syncrun</LookupType></LookupTypes>
+          <IsCustomField>1</IsCustomField>
+          <displaynames><displayname description="Sync Run" languagecode="1033" /></displaynames>
+        </attribute>
+        <attribute PhysicalName="invs_Severity">
+          <Type>picklist</Type><Name>invs_severity</Name><LogicalName>invs_severity</LogicalName>
+          <RequiredLevel>applicationrequired</RequiredLevel><IsCustomField>1</IsCustomField>
+          <optionset Name="invs_synclog_invs_severity">
+            <OptionSetType>picklist</OptionSetType><IsGlobal>0</IsGlobal><IntroducedVersion>1.0.0.0</IntroducedVersion>
+            <options>
+              <option value="100000000"><labels><label description="Warning" languagecode="1033" /></labels></option>
+              <option value="100000001"><labels><label description="Error" languagecode="1033" /></labels></option>
+            </options>
+          </optionset>
+          <displaynames><displayname description="Severity" languagecode="1033" /></displaynames>
+        </attribute>
+        <attribute PhysicalName="invs_Category">
+          <Type>picklist</Type><Name>invs_category</Name><LogicalName>invs_category</LogicalName>
+          <RequiredLevel>applicationrequired</RequiredLevel><IsCustomField>1</IsCustomField>
+          <optionset Name="invs_synclog_invs_category">
+            <OptionSetType>picklist</OptionSetType><IsGlobal>0</IsGlobal><IntroducedVersion>1.0.0.0</IntroducedVersion>
+            <options>
+              <option value="100000000"><labels><label description="EnvironmentUnreachable" languagecode="1033" /></labels></option>
+              <option value="100000001"><labels><label description="PermissionDenied" languagecode="1033" /></labels></option>
+              <option value="100000002"><labels><label description="Throttled" languagecode="1033" /></labels></option>
+              <option value="100000003"><labels><label description="ReadFailed" languagecode="1033" /></labels></option>
+              <option value="100000004"><labels><label description="WriteFailed" languagecode="1033" /></labels></option>
+              <option value="100000005"><labels><label description="VerifyFailed" languagecode="1033" /></labels></option>
+              <option value="100000006"><labels><label description="Config" languagecode="1033" /></labels></option>
+              <option value="100000007"><labels><label description="RunSkipped" languagecode="1033" /></labels></option>
+              <option value="100000008"><labels><label description="Restored" languagecode="1033" /></labels></option>
+              <option value="100000009"><labels><label description="Skipped" languagecode="1033" /></labels></option>
+            </options>
+          </optionset>
+          <displaynames><displayname description="Category" languagecode="1033" /></displaynames>
+        </attribute>
+        <attribute PhysicalName="invs_EnvironmentId">
+          <Type>nvarchar</Type><Name>invs_environmentid</Name><LogicalName>invs_environmentid</LogicalName>
+          <RequiredLevel>none</RequiredLevel><MaxLength>100</MaxLength><Format>text</Format><IsCustomField>1</IsCustomField>
+          <displaynames><displayname description="Environment ID" languagecode="1033" /></displaynames>
+        </attribute>
+        <attribute PhysicalName="invs_EnvironmentName">
+          <Type>nvarchar</Type><Name>invs_environmentname</Name><LogicalName>invs_environmentname</LogicalName>
+          <RequiredLevel>none</RequiredLevel><MaxLength>200</MaxLength><Format>text</Format><IsCustomField>1</IsCustomField>
+          <displaynames><displayname description="Environment Name" languagecode="1033" /></displaynames>
+        </attribute>
+        <attribute PhysicalName="invs_ComponentType">
+          <Type>int</Type><Name>invs_componenttype</Name><LogicalName>invs_componenttype</LogicalName>
+          <RequiredLevel>none</RequiredLevel><MinValue>0</MinValue><MaxValue>2147483647</MaxValue><Format>none</Format>
+          <IsCustomField>1</IsCustomField><displaynames><displayname description="Component Type" languagecode="1033" /></displaynames>
+        </attribute>
+        <attribute PhysicalName="invs_ComponentId">
+          <Type>nvarchar</Type><Name>invs_componentid</Name><LogicalName>invs_componentid</LogicalName>
+          <RequiredLevel>none</RequiredLevel><MaxLength>200</MaxLength><Format>text</Format><IsCustomField>1</IsCustomField>
+          <displaynames><displayname description="Component ID" languagecode="1033" /></displaynames>
+        </attribute>
+        <attribute PhysicalName="invs_Operation">
+          <Type>nvarchar</Type><Name>invs_operation</Name><LogicalName>invs_operation</LogicalName>
+          <RequiredLevel>none</RequiredLevel><MaxLength>100</MaxLength><Format>text</Format><IsCustomField>1</IsCustomField>
+          <displaynames><displayname description="Operation" languagecode="1033" /></displaynames>
+        </attribute>
+        <attribute PhysicalName="invs_HttpStatus">
+          <Type>int</Type><Name>invs_httpstatus</Name><LogicalName>invs_httpstatus</LogicalName>
+          <RequiredLevel>none</RequiredLevel><MinValue>0</MinValue><MaxValue>999</MaxValue><Format>none</Format>
+          <IsCustomField>1</IsCustomField><displaynames><displayname description="HTTP Status" languagecode="1033" /></displaynames>
+        </attribute>
+        <attribute PhysicalName="invs_ErrorCode">
+          <Type>nvarchar</Type><Name>invs_errorcode</Name><LogicalName>invs_errorcode</LogicalName>
+          <RequiredLevel>none</RequiredLevel><MaxLength>100</MaxLength><Format>text</Format><IsCustomField>1</IsCustomField>
+          <displaynames><displayname description="Error Code" languagecode="1033" /></displaynames>
+        </attribute>
+        <attribute PhysicalName="invs_ErrorMessage">
+          <Type>ntext</Type><Name>invs_errormessage</Name><LogicalName>invs_errormessage</LogicalName>
+          <RequiredLevel>applicationrequired</RequiredLevel><MaxLength>1048576</MaxLength><Format>text</Format>
+          <IsCustomField>1</IsCustomField><displaynames><displayname description="Full Error Message" languagecode="1033" /></displaynames>
+        </attribute>
+        <attribute PhysicalName="invs_OccurredOn">
+          <Type>datetime</Type><Name>invs_occurredon</Name><LogicalName>invs_occurredon</LogicalName>
+          <RequiredLevel>applicationrequired</RequiredLevel><Format>datetime</Format><DateTimeBehavior>TimeZoneIndependent</DateTimeBehavior>
+          <IsCustomField>1</IsCustomField><displaynames><displayname description="Occurred On" languagecode="1033" /></displaynames>
+        </attribute>
+        <attribute PhysicalName="invs_CorrelationId">
+          <Type>nvarchar</Type><Name>invs_correlationid</Name><LogicalName>invs_correlationid</LogicalName>
+          <RequiredLevel>applicationrequired</RequiredLevel><MaxLength>100</MaxLength><Format>text</Format>
+          <IsCustomField>1</IsCustomField><displaynames><displayname description="Correlation ID" languagecode="1033" /></displaynames>
+        </attribute>
+      </attributes>
+      <EntitySetName>invs_synclogs</EntitySetName>
+      <OwnershipTypeMask>UserOwned</OwnershipTypeMask>
+      <IsActivity>0</IsActivity>
+      <IsAuditEnabled>1</IsAuditEnabled>
+      <IsCustomizable>1</IsCustomizable>
+      <IsRenameable>1</IsRenameable>
+      <PrimaryNameAttribute>invs_name</PrimaryNameAttribute>
+    </entity>
+  </EntityInfo>
+</Entity>

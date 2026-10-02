@@ -1,0 +1,139 @@
+<?xml version="1.0" encoding="utf-8"?>
+<Entity xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <Name LocalizedName="Sync Run" OriginalName="Sync Run">invs_syncrun</Name>
+  <EntityInfo>
+    <entity Name="invs_syncrun">
+      <LocalizedNames>
+        <LocalizedName description="Sync Run" languagecode="1033" />
+      </LocalizedNames>
+      <LocalizedCollectionNames>
+        <LocalizedCollectionName description="Sync Runs" languagecode="1033" />
+      </LocalizedCollectionNames>
+      <Descriptions>
+        <Description description="Header and outcome for one inventory synchronization run." languagecode="1033" />
+      </Descriptions>
+      <attributes>
+        <attribute PhysicalName="invs_SyncRunId">
+          <Type>primarykey</Type><Name>invs_syncrunid</Name><LogicalName>invs_syncrunid</LogicalName>
+          <RequiredLevel>systemrequired</RequiredLevel><IsCustomField>1</IsCustomField>
+          <displaynames><displayname description="Sync Run" languagecode="1033" /></displaynames>
+        </attribute>
+        <attribute PhysicalName="invs_Name">
+          <Type>nvarchar</Type><Name>invs_name</Name><LogicalName>invs_name</LogicalName>
+          <RequiredLevel>applicationrequired</RequiredLevel><MaxLength>200</MaxLength><Format>text</Format>
+          <IsCustomField>1</IsCustomField>
+          <displaynames><displayname description="Name" languagecode="1033" /></displaynames>
+        </attribute>
+        <attribute PhysicalName="invs_RunId">
+          <Type>nvarchar</Type><Name>invs_runid</Name><LogicalName>invs_runid</LogicalName>
+          <RequiredLevel>applicationrequired</RequiredLevel><MaxLength>100</MaxLength><Format>text</Format>
+          <IsCustomField>1</IsCustomField>
+          <displaynames><displayname description="Run ID" languagecode="1033" /></displaynames>
+        </attribute>
+        <attribute PhysicalName="invs_SyncType">
+          <Type>picklist</Type><Name>invs_synctype</Name><LogicalName>invs_synctype</LogicalName>
+          <RequiredLevel>applicationrequired</RequiredLevel><IsCustomField>1</IsCustomField>
+          <optionset Name="invs_syncrun_invs_synctype">
+            <OptionSetType>picklist</OptionSetType><IsGlobal>0</IsGlobal><IntroducedVersion>1.0.0.0</IntroducedVersion>
+            <options>
+              <option value="100000000"><labels><label description="RPA" languagecode="1033" /></labels></option>
+              <option value="100000001"><labels><label description="AgentBuilder" languagecode="1033" /></labels></option>
+            </options>
+          </optionset>
+          <displaynames><displayname description="Sync Type" languagecode="1033" /></displaynames>
+        </attribute>
+        <attribute PhysicalName="invs_Phase">
+          <Type>picklist</Type><Name>invs_phase</Name><LogicalName>invs_phase</LogicalName>
+          <RequiredLevel>applicationrequired</RequiredLevel><IsCustomField>1</IsCustomField>
+          <optionset Name="invs_syncrun_invs_phase">
+            <OptionSetType>picklist</OptionSetType><IsGlobal>0</IsGlobal><IntroducedVersion>1.0.0.0</IntroducedVersion>
+            <options>
+              <option value="100000000"><labels><label description="Collect" languagecode="1033" /></labels></option>
+              <option value="100000001"><labels><label description="Write" languagecode="1033" /></labels></option>
+              <option value="100000002"><labels><label description="DeletionCheck" languagecode="1033" /></labels></option>
+            </options>
+          </optionset>
+          <displaynames><displayname description="Phase" languagecode="1033" /></displaynames>
+        </attribute>
+        <attribute PhysicalName="invs_StartedOn">
+          <Type>datetime</Type><Name>invs_startedon</Name><LogicalName>invs_startedon</LogicalName>
+          <RequiredLevel>applicationrequired</RequiredLevel><Format>datetime</Format><DateTimeBehavior>TimeZoneIndependent</DateTimeBehavior>
+          <IsCustomField>1</IsCustomField>
+          <displaynames><displayname description="Started On" languagecode="1033" /></displaynames>
+        </attribute>
+        <attribute PhysicalName="invs_CompletedOn">
+          <Type>datetime</Type><Name>invs_completedon</Name><LogicalName>invs_completedon</LogicalName>
+          <RequiredLevel>none</RequiredLevel><Format>datetime</Format><DateTimeBehavior>TimeZoneIndependent</DateTimeBehavior>
+          <IsCustomField>1</IsCustomField>
+          <displaynames><displayname description="Completed On" languagecode="1033" /></displaynames>
+        </attribute>
+        <attribute PhysicalName="invs_Status">
+          <Type>picklist</Type><Name>invs_status</Name><LogicalName>invs_status</LogicalName>
+          <RequiredLevel>applicationrequired</RequiredLevel><IsCustomField>1</IsCustomField>
+          <optionset Name="invs_syncrun_invs_status">
+            <OptionSetType>picklist</OptionSetType><IsGlobal>0</IsGlobal><IntroducedVersion>1.0.0.0</IntroducedVersion>
+            <options>
+              <option value="100000000"><labels><label description="Running" languagecode="1033" /></labels></option>
+              <option value="100000001"><labels><label description="Succeeded" languagecode="1033" /></labels></option>
+              <option value="100000002"><labels><label description="Partial" languagecode="1033" /></labels></option>
+              <option value="100000003"><labels><label description="Failed" languagecode="1033" /></labels></option>
+            </options>
+          </optionset>
+          <displaynames><displayname description="Status" languagecode="1033" /></displaynames>
+        </attribute>
+        <attribute PhysicalName="invs_EnvironmentsTotal">
+          <Type>int</Type><Name>invs_environmentstotal</Name><LogicalName>invs_environmentstotal</LogicalName>
+          <RequiredLevel>none</RequiredLevel><MinValue>0</MinValue><MaxValue>2147483647</MaxValue><Format>none</Format>
+          <IsCustomField>1</IsCustomField><displaynames><displayname description="Environments Total" languagecode="1033" /></displaynames>
+        </attribute>
+        <attribute PhysicalName="invs_EnvironmentsFailed">
+          <Type>int</Type><Name>invs_environmentsfailed</Name><LogicalName>invs_environmentsfailed</LogicalName>
+          <RequiredLevel>none</RequiredLevel><MinValue>0</MinValue><MaxValue>2147483647</MaxValue><Format>none</Format>
+          <IsCustomField>1</IsCustomField><displaynames><displayname description="Environments Failed" languagecode="1033" /></displaynames>
+        </attribute>
+        <attribute PhysicalName="invs_Found">
+          <Type>int</Type><Name>invs_found</Name><LogicalName>invs_found</LogicalName>
+          <RequiredLevel>none</RequiredLevel><MinValue>0</MinValue><MaxValue>2147483647</MaxValue><Format>none</Format>
+          <IsCustomField>1</IsCustomField><displaynames><displayname description="Found" languagecode="1033" /></displaynames>
+        </attribute>
+        <attribute PhysicalName="invs_Created">
+          <Type>int</Type><Name>invs_created</Name><LogicalName>invs_created</LogicalName>
+          <RequiredLevel>none</RequiredLevel><MinValue>0</MinValue><MaxValue>2147483647</MaxValue><Format>none</Format>
+          <IsCustomField>1</IsCustomField><displaynames><displayname description="Created" languagecode="1033" /></displaynames>
+        </attribute>
+        <attribute PhysicalName="invs_Updated">
+          <Type>int</Type><Name>invs_updated</Name><LogicalName>invs_updated</LogicalName>
+          <RequiredLevel>none</RequiredLevel><MinValue>0</MinValue><MaxValue>2147483647</MaxValue><Format>none</Format>
+          <IsCustomField>1</IsCustomField><displaynames><displayname description="Updated" languagecode="1033" /></displaynames>
+        </attribute>
+        <attribute PhysicalName="invs_Unchanged">
+          <Type>int</Type><Name>invs_unchanged</Name><LogicalName>invs_unchanged</LogicalName>
+          <RequiredLevel>none</RequiredLevel><MinValue>0</MinValue><MaxValue>2147483647</MaxValue><Format>none</Format>
+          <IsCustomField>1</IsCustomField><displaynames><displayname description="Unchanged" languagecode="1033" /></displaynames>
+        </attribute>
+        <attribute PhysicalName="invs_MarkedDeleted">
+          <Type>int</Type><Name>invs_markeddeleted</Name><LogicalName>invs_markeddeleted</LogicalName>
+          <RequiredLevel>none</RequiredLevel><MinValue>0</MinValue><MaxValue>2147483647</MaxValue><Format>none</Format>
+          <IsCustomField>1</IsCustomField><displaynames><displayname description="Marked Deleted" languagecode="1033" /></displaynames>
+        </attribute>
+        <attribute PhysicalName="invs_Restored">
+          <Type>int</Type><Name>invs_restored</Name><LogicalName>invs_restored</LogicalName>
+          <RequiredLevel>none</RequiredLevel><MinValue>0</MinValue><MaxValue>2147483647</MaxValue><Format>none</Format>
+          <IsCustomField>1</IsCustomField><displaynames><displayname description="Restored" languagecode="1033" /></displaynames>
+        </attribute>
+        <attribute PhysicalName="invs_Errors">
+          <Type>int</Type><Name>invs_errors</Name><LogicalName>invs_errors</LogicalName>
+          <RequiredLevel>none</RequiredLevel><MinValue>0</MinValue><MaxValue>2147483647</MaxValue><Format>none</Format>
+          <IsCustomField>1</IsCustomField><displaynames><displayname description="Errors" languagecode="1033" /></displaynames>
+        </attribute>
+      </attributes>
+      <EntitySetName>invs_syncruns</EntitySetName>
+      <OwnershipTypeMask>UserOwned</OwnershipTypeMask>
+      <IsActivity>0</IsActivity>
+      <IsAuditEnabled>1</IsAuditEnabled>
+      <IsCustomizable>1</IsCustomizable>
+      <IsRenameable>1</IsRenameable>
+      <PrimaryNameAttribute>invs_name</PrimaryNameAttribute>
+    </entity>
+  </EntityInfo>
+</Entity>

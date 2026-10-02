@@ -12,6 +12,8 @@
     "INVENTORY_TARGET_DATAVERSE_URL": "https://<environment>.crm.dynamics.com",
     "INVENTORY_AGENT_CREATED_IN": "Microsoft 365 Copilot Agent Builder",
     "INVENTORY_AGENT_SCHEDULE": "0 0 0 * * *",
-    "INVENTORY_AGENT_SUBSCRIPTIONS": ""
+    "INVENTORY_AGENT_SUBSCRIPTIONS": "",
+    "INVENTORY_SYNC_RUN_TABLE": "invs_syncruns",
+    "INVENTORY_SYNC_LOG_TABLE": "invs_synclogs"
   }
 }

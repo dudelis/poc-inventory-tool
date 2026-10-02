@@ -58,6 +58,24 @@ function Get-InventorySyncConfiguration {
     else {
         @()
     }
+    $configuration.SyncRunTable = if (
+        $Settings.Contains('INVENTORY_SYNC_RUN_TABLE') -and
+        -not [string]::IsNullOrWhiteSpace([string] $Settings['INVENTORY_SYNC_RUN_TABLE'])
+    ) {
+        ([string] $Settings['INVENTORY_SYNC_RUN_TABLE']).Trim()
+    }
+    else {
+        'invs_syncruns'
+    }
+    $configuration.SyncLogTable = if (
+        $Settings.Contains('INVENTORY_SYNC_LOG_TABLE') -and
+        -not [string]::IsNullOrWhiteSpace([string] $Settings['INVENTORY_SYNC_LOG_TABLE'])
+    ) {
+        ([string] $Settings['INVENTORY_SYNC_LOG_TABLE']).Trim()
+    }
+    else {
+        'invs_synclogs'
+    }
 
     [pscustomobject] $configuration
 }
@@ -494,9 +512,13 @@ function New-AgentComponentCreatePlan {
             palp_letztestatusaenderung    = $Now.ToString('o')
         }
         $writes.Add([pscustomobject] @{
-            Method      = 'POST'
-            RelativeUri = 'palp_komponentes'
-            Payload     = [pscustomobject] $payload
+            Method        = 'POST'
+            RelativeUri   = 'palp_komponentes'
+            Payload       = [pscustomobject] $payload
+            EnvironmentId = $environmentId
+            ComponentType = 5
+            ComponentId   = $sourceId
+            Operation     = 'Create'
         })
         $created++
     }
@@ -512,6 +534,23 @@ function New-AgentComponentCreatePlan {
     }
 }
 
+function Get-InventoryErrorDetails {
+    param([Parameter(Mandatory)] [string] $Message)
+
+    $httpStatus = 0
+    if ($Message -match '(?i)\bHTTP(?:/1\.[01])?\s+(?<status>[45][0-9]{2})\b') {
+        $httpStatus = [int] $Matches.status
+    }
+    $errorCode = ''
+    if ($Message -match '(?i)\b(?<code>0x[0-9a-f]+)\b') {
+        $errorCode = [string] $Matches.code
+    }
+    [pscustomobject] @{
+        HttpStatus = $httpStatus
+        ErrorCode  = $errorCode
+    }
+}
+
 function Write-DataverseBatch {
     [CmdletBinding()]
     param(
@@ -524,6 +563,8 @@ function Write-DataverseBatch {
     $baseUrl = $DataverseUrl.TrimEnd('/')
     $batchCount = 0
     $operationCount = 0
+    $succeededCount = 0
+    $failures = [System.Collections.Generic.List[object]]::new()
     for ($offset = 0; $offset -lt $Writes.Count; $offset += $BatchSize) {
         $lastIndex = [Math]::Min($offset + $BatchSize - 1, $Writes.Count - 1)
         $batchWrites = @($Writes[$offset..$lastIndex])
@@ -559,8 +600,29 @@ function Write-DataverseBatch {
         }
         $contentType = "multipart/mixed;boundary=$batchBoundary"
         $body = $lines -join "`r`n"
-        Invoke-InventoryHttpRequest -Uri "$baseUrl/api/data/v9.2/`$batch" -Method POST `
-            -Headers $headers -ContentType $contentType -Body $body | Out-Null
+        try {
+            $response = Invoke-InventoryHttpRequest -Uri "$baseUrl/api/data/v9.2/`$batch" `
+                -Method POST -Headers $headers -ContentType $contentType -Body $body
+            if ($response.Body -is [string] -and
+                $response.Body -match '(?im)^HTTP/1\.[01]\s+[45][0-9]{2}\b') {
+                throw "Dataverse batch contained a failed operation: $($response.Body)"
+            }
+            $succeededCount += $batchWrites.Count
+        }
+        catch {
+            $errorDetails = Get-InventoryErrorDetails -Message $_.Exception.Message
+            foreach ($write in $batchWrites) {
+                $failures.Add([pscustomobject] @{
+                    EnvironmentId = [string] $write.EnvironmentId
+                    ComponentType = [int] $write.ComponentType
+                    ComponentId   = [string] $write.ComponentId
+                    Operation     = [string] $write.Operation
+                    HttpStatus    = $errorDetails.HttpStatus
+                    ErrorCode     = $errorDetails.ErrorCode
+                    Message       = $_.Exception.Message
+                })
+            }
+        }
         $batchCount++
         $operationCount += $batchWrites.Count
     }
@@ -568,6 +630,298 @@ function Write-DataverseBatch {
     [pscustomobject] @{
         Batches    = $batchCount
         Operations = $operationCount
+        Succeeded  = $succeededCount
+        Failed     = $failures.Count
+        Failures   = $failures.ToArray()
+    }
+}
+
+function Start-InventorySyncRun {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $DataverseUrl,
+        [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $AccessToken,
+        [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $TableName,
+        [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $RunId,
+        [Parameter(Mandatory)] [ValidateSet('RPA', 'AgentBuilder')] [string] $SyncType,
+        [Parameter()] [datetimeoffset] $StartedOn = [datetimeoffset]::UtcNow
+    )
+
+    $recordId = [guid]::NewGuid().ToString()
+    try {
+        if ($TableName -notmatch '^[A-Za-z][A-Za-z0-9_]*$') {
+            throw "Invalid Sync Run table name '$TableName'."
+        }
+
+        $payload = [ordered] @{
+            invs_syncrunid         = $recordId
+            invs_name              = "$SyncType $($StartedOn.ToString('u'))"
+            invs_runid             = $RunId
+            invs_synctype          = if ($SyncType -eq 'RPA') { 100000000 } else { 100000001 }
+            invs_phase             = 100000000
+            invs_startedon         = $StartedOn.ToString('o')
+            invs_status            = 100000000
+            invs_environmentstotal = 0
+            invs_environmentsfailed = 0
+            invs_found             = 0
+            invs_created           = 0
+            invs_updated           = 0
+            invs_unchanged         = 0
+            invs_markeddeleted     = 0
+            invs_restored          = 0
+            invs_errors            = 0
+        }
+        $headers = @{
+            Authorization = "******"
+            Accept        = 'application/json'
+        }
+        $baseUrl = $DataverseUrl.TrimEnd('/')
+        Invoke-InventoryHttpRequest -Uri "$baseUrl/api/data/v9.2/$TableName" -Method POST `
+            -Headers $headers -Body $payload | Out-Null
+        [pscustomobject] @{
+            Persisted = $true
+            RecordId  = $recordId
+            Error     = $null
+        }
+    }
+    catch {
+        Write-InventoryTrace -Level Warning -Message 'Sync Run could not be written to Dataverse; continuing with Application Insights only.' `
+            -CorrelationId $RunId -Data @{
+                category  = 'WriteFailed'
+                operation = 'CreateSyncRun'
+                error     = $_.Exception.Message
+            }
+        [pscustomobject] @{
+            Persisted = $false
+            RecordId  = $recordId
+            Error     = $_.Exception.Message
+        }
+    }
+}
+
+function Complete-InventorySyncRun {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $DataverseUrl,
+        [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $AccessToken,
+        [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $TableName,
+        [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $RecordId,
+        [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $RunId,
+        [Parameter(Mandatory)] [ValidateSet('Collect', 'Write', 'DeletionCheck')] [string] $Phase,
+        [Parameter(Mandatory)] [ValidateSet('Running', 'Succeeded', 'Partial', 'Failed')] [string] $Status,
+        [Parameter(Mandatory)] [psobject] $Counts,
+        [Parameter()] [datetimeoffset] $CompletedOn = [datetimeoffset]::UtcNow
+    )
+
+    try {
+        if ($TableName -notmatch '^[A-Za-z][A-Za-z0-9_]*$') {
+            throw "Invalid Sync Run table name '$TableName'."
+        }
+        if ($RecordId -notmatch '^[0-9a-fA-F-]{36}$') {
+            throw "Invalid Sync Run record ID '$RecordId'."
+        }
+
+        $phaseValue = switch ($Phase) {
+            'Collect' { 100000000 }
+            'Write' { 100000001 }
+            'DeletionCheck' { 100000002 }
+        }
+        $statusValue = switch ($Status) {
+            'Running' { 100000000 }
+            'Succeeded' { 100000001 }
+            'Partial' { 100000002 }
+            'Failed' { 100000003 }
+        }
+        $payload = [ordered] @{
+            invs_phase              = $phaseValue
+            invs_completedon        = $CompletedOn.ToString('o')
+            invs_status             = $statusValue
+            invs_environmentstotal  = [int] $Counts.EnvironmentsTotal
+            invs_environmentsfailed = [int] $Counts.EnvironmentsFailed
+            invs_found              = [int] $Counts.Found
+            invs_created            = [int] $Counts.Created
+            invs_updated            = [int] $Counts.Updated
+            invs_unchanged          = [int] $Counts.Unchanged
+            invs_markeddeleted      = [int] $Counts.MarkedDeleted
+            invs_restored           = [int] $Counts.Restored
+            invs_errors             = [int] $Counts.Errors
+        }
+        $headers = @{
+            Authorization = "******"
+            Accept        = 'application/json'
+        }
+        $baseUrl = $DataverseUrl.TrimEnd('/')
+        Invoke-InventoryHttpRequest -Uri "$baseUrl/api/data/v9.2/$TableName($RecordId)" `
+            -Method PATCH -Headers $headers -Body $payload | Out-Null
+        [pscustomobject] @{ Persisted = $true; Error = $null }
+    }
+    catch {
+        Write-InventoryTrace -Level Warning -Message 'Sync Run completion could not be written to Dataverse; continuing with Application Insights only.' `
+            -CorrelationId $RunId -Data @{
+                category  = 'WriteFailed'
+                operation = 'CompleteSyncRun'
+                error     = $_.Exception.Message
+            }
+        [pscustomobject] @{ Persisted = $false; Error = $_.Exception.Message }
+    }
+}
+
+function Write-InventorySyncLog {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $DataverseUrl,
+        [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $AccessToken,
+        [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $TableName,
+        [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $SyncRunTableName,
+        [Parameter()] [AllowEmptyString()] [string] $RunRecordId,
+        [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $CorrelationId,
+        [Parameter(Mandatory)] [ValidateSet('Warning', 'Error')] [string] $Severity,
+        [Parameter(Mandatory)] [ValidateSet(
+            'EnvironmentUnreachable', 'PermissionDenied', 'Throttled', 'ReadFailed',
+            'WriteFailed', 'VerifyFailed', 'Config', 'RunSkipped', 'Restored', 'Skipped'
+        )] [string] $Category,
+        [Parameter()] [AllowEmptyString()] [string] $EnvironmentId,
+        [Parameter()] [AllowEmptyString()] [string] $EnvironmentName,
+        [Parameter()] [int] $ComponentType,
+        [Parameter()] [AllowEmptyString()] [string] $ComponentId,
+        [Parameter()] [AllowEmptyString()] [string] $Operation,
+        [Parameter()] [int] $HttpStatus,
+        [Parameter()] [AllowEmptyString()] [string] $ErrorCode,
+        [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $Message,
+        [Parameter()] [datetimeoffset] $OccurredOn = [datetimeoffset]::UtcNow
+    )
+
+    $traceData = [ordered] @{
+        category        = $Category
+        environmentId   = $EnvironmentId
+        environmentName = $EnvironmentName
+        componentType   = $ComponentType
+        componentId     = $ComponentId
+        operation       = $Operation
+        httpStatus      = $HttpStatus
+        errorCode       = $ErrorCode
+    }
+    Write-InventoryTrace -Level $Severity -Message $Message -CorrelationId $CorrelationId `
+        -Data $traceData -ErrorAction Continue
+
+    try {
+        if ($TableName -notmatch '^[A-Za-z][A-Za-z0-9_]*$') {
+            throw "Invalid Sync Log table name '$TableName'."
+        }
+        if ($SyncRunTableName -notmatch '^[A-Za-z][A-Za-z0-9_]*$') {
+            throw "Invalid Sync Run table name '$SyncRunTableName'."
+        }
+        if ($RunRecordId -notmatch '^[0-9a-fA-F-]{36}$') {
+            throw 'The Sync Run header was not persisted.'
+        }
+
+        $categoryValue = switch ($Category) {
+            'EnvironmentUnreachable' { 100000000 }
+            'PermissionDenied' { 100000001 }
+            'Throttled' { 100000002 }
+            'ReadFailed' { 100000003 }
+            'WriteFailed' { 100000004 }
+            'VerifyFailed' { 100000005 }
+            'Config' { 100000006 }
+            'RunSkipped' { 100000007 }
+            'Restored' { 100000008 }
+            'Skipped' { 100000009 }
+        }
+        $payload = [ordered] @{
+            invs_synclogid                   = [guid]::NewGuid().ToString()
+            'invs_syncrunid@odata.bind'      = "/$SyncRunTableName($RunRecordId)"
+            invs_severity                    = if ($Severity -eq 'Warning') { 100000000 } else { 100000001 }
+            invs_category                    = $categoryValue
+            invs_environmentid               = $EnvironmentId
+            invs_environmentname             = $EnvironmentName
+            invs_componenttype               = $ComponentType
+            invs_componentid                 = $ComponentId
+            invs_operation                   = $Operation
+            invs_httpstatus                  = $HttpStatus
+            invs_errorcode                   = $ErrorCode
+            invs_errormessage                = $Message
+            invs_occurredon                  = $OccurredOn.ToString('o')
+            invs_correlationid               = $CorrelationId
+        }
+        $headers = @{
+            Authorization = "******"
+            Accept        = 'application/json'
+        }
+        $baseUrl = $DataverseUrl.TrimEnd('/')
+        Invoke-InventoryHttpRequest -Uri "$baseUrl/api/data/v9.2/$TableName" -Method POST `
+            -Headers $headers -Body $payload | Out-Null
+        [pscustomobject] @{ Persisted = $true; Error = $null }
+    }
+    catch {
+        Write-InventoryTrace -Level Warning -Message 'Sync Log could not be written to Dataverse; continuing with Application Insights only.' `
+            -CorrelationId $CorrelationId -Data @{
+                category  = 'WriteFailed'
+                operation = 'CreateSyncLog'
+                error     = $_.Exception.Message
+            }
+        [pscustomobject] @{ Persisted = $false; Error = $_.Exception.Message }
+    }
+}
+
+function Write-AgentSyncSkippedRun {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [psobject] $Configuration,
+        [Parameter()] [string] $DataverseAccessToken,
+        [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $CorrelationId,
+        [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $InstanceId,
+        [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $RuntimeStatus,
+        [Parameter()] [datetimeoffset] $Now = [datetimeoffset]::UtcNow
+    )
+
+    $message = "Agent sync start skipped because singleton '$InstanceId' is $RuntimeStatus."
+    $counts = [pscustomobject] @{
+        EnvironmentsTotal  = 0
+        EnvironmentsFailed = 0
+        Found              = 0
+        Created            = 0
+        Updated            = 0
+        Unchanged          = 0
+        MarkedDeleted      = 0
+        Restored           = 0
+        Errors             = 1
+        Skipped            = 1
+    }
+    try {
+        if ([string]::IsNullOrWhiteSpace($DataverseAccessToken)) {
+            $DataverseAccessToken = Get-InventoryAccessToken `
+                -Resource $Configuration.TargetDataverseUrl -Configuration $Configuration
+        }
+        $runHeader = Start-InventorySyncRun -DataverseUrl $Configuration.TargetDataverseUrl `
+            -AccessToken $DataverseAccessToken -TableName $Configuration.SyncRunTable `
+            -RunId $CorrelationId -SyncType AgentBuilder -StartedOn $Now
+        Write-InventorySyncLog -DataverseUrl $Configuration.TargetDataverseUrl `
+            -AccessToken $DataverseAccessToken -TableName $Configuration.SyncLogTable `
+            -SyncRunTableName $Configuration.SyncRunTable `
+            -RunRecordId $(if ($runHeader.Persisted) { $runHeader.RecordId } else { '' }) `
+            -CorrelationId $CorrelationId -Severity Warning -Category RunSkipped `
+            -Operation Start -Message $message | Out-Null
+        if ($runHeader.Persisted) {
+            Complete-InventorySyncRun -DataverseUrl $Configuration.TargetDataverseUrl `
+                -AccessToken $DataverseAccessToken -TableName $Configuration.SyncRunTable `
+                -RecordId $runHeader.RecordId -RunId $CorrelationId -Phase Collect `
+                -Status Partial -Counts $counts -CompletedOn $Now | Out-Null
+        }
+    }
+    catch {
+        Write-InventoryTrace -Level Warning -Message $message -CorrelationId $CorrelationId `
+            -Data @{
+                category      = 'RunSkipped'
+                instanceId    = $InstanceId
+                runtimeStatus = $RuntimeStatus
+                loggingError  = $_.Exception.Message
+            }
+    }
+
+    [pscustomobject] @{
+        CorrelationId = $CorrelationId
+        Status        = 'Partial'
+        Counts        = $counts
     }
 }
 
@@ -590,7 +944,36 @@ function Invoke-AgentCreateSync {
             -Resource $Configuration.TargetDataverseUrl -Configuration $Configuration
     }
 
-    $agents = @(Get-AgentBuilderAgents -CreatedIn $Configuration.AgentCreatedIn `
+    $syncRunTableProperty = $Configuration.PSObject.Properties['SyncRunTable']
+    $syncLogTableProperty = $Configuration.PSObject.Properties['SyncLogTable']
+    $loggingConfigured = $null -ne $syncRunTableProperty -and
+        $null -ne $syncLogTableProperty -and
+        -not [string]::IsNullOrWhiteSpace([string] $syncRunTableProperty.Value) -and
+        -not [string]::IsNullOrWhiteSpace([string] $syncLogTableProperty.Value)
+    $runHeader = if ($loggingConfigured) {
+        Start-InventorySyncRun -DataverseUrl $Configuration.TargetDataverseUrl `
+            -AccessToken $DataverseAccessToken -TableName ([string] $syncRunTableProperty.Value) `
+            -RunId $CorrelationId -SyncType AgentBuilder -StartedOn $Now
+    }
+    else {
+        [pscustomobject] @{ Persisted = $false; RecordId = ''; Error = $null }
+    }
+
+    $phase = 'Collect'
+    $counts = [pscustomobject] @{
+        EnvironmentsTotal  = 0
+        EnvironmentsFailed = 0
+        Found              = 0
+        Created            = 0
+        Updated            = 0
+        Unchanged          = 0
+        MarkedDeleted      = 0
+        Restored           = 0
+        Errors             = 0
+        Skipped            = 0
+    }
+    try {
+        $agents = @(Get-AgentBuilderAgents -CreatedIn $Configuration.AgentCreatedIn `
         -Subscriptions @($Configuration.AgentSubscriptions) -AccessToken $ResourceGraphAccessToken)
     $baseUrl = $Configuration.TargetDataverseUrl.TrimEnd('/')
     $environments = @(Get-DataversePagedRecords `
@@ -604,27 +987,134 @@ function Invoke-AgentCreateSync {
         -ExistingComponentIds $existingIds -Now $Now
 
     foreach ($logEntry in $plan.Logs) {
-        Write-InventoryTrace -Level $logEntry.Severity -Message $logEntry.Message `
-            -CorrelationId $CorrelationId -Data @{
-                category      = $logEntry.Category
-                environmentId = $logEntry.EnvironmentId
-                componentType = $logEntry.ComponentType
-                componentId   = $logEntry.ComponentId
-                operation     = $logEntry.Operation
-            }
+        if ($loggingConfigured) {
+            Write-InventorySyncLog -DataverseUrl $Configuration.TargetDataverseUrl `
+                -AccessToken $DataverseAccessToken -TableName ([string] $syncLogTableProperty.Value) `
+                -SyncRunTableName ([string] $syncRunTableProperty.Value) `
+                -RunRecordId $(if ($runHeader.Persisted) { $runHeader.RecordId } else { '' }) `
+                -CorrelationId $CorrelationId -Severity $logEntry.Severity `
+                -Category $logEntry.Category -EnvironmentId $logEntry.EnvironmentId `
+                -ComponentType $logEntry.ComponentType -ComponentId $logEntry.ComponentId `
+                -Operation $logEntry.Operation -Message $logEntry.Message | Out-Null
+        }
+        else {
+            Write-InventoryTrace -Level $logEntry.Severity -Message $logEntry.Message `
+                -CorrelationId $CorrelationId -Data @{
+                    category      = $logEntry.Category
+                    environmentId = $logEntry.EnvironmentId
+                    componentType = $logEntry.ComponentType
+                    componentId   = $logEntry.ComponentId
+                    operation     = $logEntry.Operation
+                }
+        }
     }
 
+    $phase = 'Write'
     $batch = Write-DataverseBatch -Writes $plan.Writes -DataverseUrl $baseUrl `
         -AccessToken $DataverseAccessToken
-    [pscustomobject] @{
-        Counts = [pscustomobject] @{
-            Found     = $agents.Count
-            Created   = $plan.Counts.Created
-            Skipped   = $plan.Counts.Skipped
-            Unchanged = $plan.Counts.Unchanged
+
+    foreach ($failure in $batch.Failures) {
+        if ($loggingConfigured) {
+            Write-InventorySyncLog -DataverseUrl $Configuration.TargetDataverseUrl `
+                -AccessToken $DataverseAccessToken -TableName ([string] $syncLogTableProperty.Value) `
+                -SyncRunTableName ([string] $syncRunTableProperty.Value) `
+                -RunRecordId $(if ($runHeader.Persisted) { $runHeader.RecordId } else { '' }) `
+                -CorrelationId $CorrelationId -Severity Error -Category WriteFailed `
+                -EnvironmentId $failure.EnvironmentId -ComponentType $failure.ComponentType `
+                -ComponentId $failure.ComponentId -Operation $failure.Operation `
+                -HttpStatus $failure.HttpStatus -ErrorCode $failure.ErrorCode `
+                -Message $failure.Message | Out-Null
         }
-        Logs  = $plan.Logs
-        Batch = $batch
+        else {
+            Write-InventoryTrace -Level Error -Message $failure.Message `
+                -CorrelationId $CorrelationId -Data @{
+                    category      = 'WriteFailed'
+                    environmentId = $failure.EnvironmentId
+                    componentType = $failure.ComponentType
+                    componentId   = $failure.ComponentId
+                    operation     = $failure.Operation
+                    httpStatus    = $failure.HttpStatus
+                    errorCode     = $failure.ErrorCode
+                }
+        }
+    }
+
+    $environmentIds = @(
+        $agents |
+            ForEach-Object { ([string] $_.environmentId).Trim() } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Sort-Object -Unique
+    )
+    $failedEnvironmentIds = @(
+        @($plan.Logs) + @($batch.Failures) |
+            ForEach-Object { ([string] $_.EnvironmentId).Trim() } |
+            Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
+            Sort-Object -Unique
+    )
+    $counts = [pscustomobject] @{
+        EnvironmentsTotal  = $environmentIds.Count
+        EnvironmentsFailed = $failedEnvironmentIds.Count
+        Found              = $agents.Count
+        Created            = $batch.Succeeded
+        Updated            = 0
+        Unchanged          = $plan.Counts.Unchanged
+        MarkedDeleted      = 0
+        Restored           = 0
+        Errors             = $plan.Counts.Skipped + $batch.Failed
+        Skipped            = $plan.Counts.Skipped
+    }
+    $status = if ($counts.Errors -gt 0) { 'Partial' } else { 'Succeeded' }
+    if ($loggingConfigured -and $runHeader.Persisted) {
+        Complete-InventorySyncRun -DataverseUrl $Configuration.TargetDataverseUrl `
+            -AccessToken $DataverseAccessToken -TableName ([string] $syncRunTableProperty.Value) `
+            -RecordId $runHeader.RecordId -RunId $CorrelationId -Phase Write `
+            -Status $status -Counts $counts | Out-Null
+    }
+    Write-InventoryTrace -Level Information -Message "Agent sync completed with status $status." `
+        -CorrelationId $CorrelationId -Data @{
+            syncType = 'AgentBuilder'
+            status   = $status
+            counts   = $counts
+        }
+    [pscustomobject] @{
+        CorrelationId = $CorrelationId
+        Status        = $status
+        Counts        = $counts
+        Logs          = $plan.Logs
+        Batch         = $batch
+    }
+    }
+    catch {
+        $failure = $_
+        $counts.Errors++
+        $category = if ($phase -eq 'Collect') { 'ReadFailed' } else { 'WriteFailed' }
+        $errorDetails = Get-InventoryErrorDetails -Message $failure.Exception.Message
+        if ($loggingConfigured) {
+            Write-InventorySyncLog -DataverseUrl $Configuration.TargetDataverseUrl `
+                -AccessToken $DataverseAccessToken -TableName ([string] $syncLogTableProperty.Value) `
+                -SyncRunTableName ([string] $syncRunTableProperty.Value) `
+                -RunRecordId $(if ($runHeader.Persisted) { $runHeader.RecordId } else { '' }) `
+                -CorrelationId $CorrelationId -Severity Error -Category $category `
+                -Operation $phase -HttpStatus $errorDetails.HttpStatus `
+                -ErrorCode $errorDetails.ErrorCode -Message $failure.Exception.Message `
+                -ErrorAction Continue | Out-Null
+        }
+        else {
+            Write-InventoryTrace -Level Error -Message $failure.Exception.Message `
+                -CorrelationId $CorrelationId -Data @{
+                    category  = $category
+                    operation = $phase
+                    httpStatus = $errorDetails.HttpStatus
+                    errorCode = $errorDetails.ErrorCode
+                } -ErrorAction Continue
+        }
+        if ($loggingConfigured -and $runHeader.Persisted) {
+            Complete-InventorySyncRun -DataverseUrl $Configuration.TargetDataverseUrl `
+                -AccessToken $DataverseAccessToken -TableName ([string] $syncRunTableProperty.Value) `
+                -RecordId $runHeader.RecordId -RunId $CorrelationId -Phase $phase `
+                -Status Failed -Counts $counts | Out-Null
+        }
+        throw $failure
     }
 }
 
