@@ -12,7 +12,6 @@
     "INVENTORY_TARGET_DATAVERSE_URL": "https://<environment>.crm.dynamics.com",
     "INVENTORY_AGENT_CREATED_IN": "Microsoft 365 Copilot Agent Builder",
     "INVENTORY_AGENT_SCHEDULE": "0 0 0 * * *",
-    "INVENTORY_AGENT_SUBSCRIPTIONS": "",
     "INVENTORY_RPA_SCHEDULE": "0 0 0 * * *",
     "INVENTORY_RPA_ENVIRONMENT_URL_COLUMN": "palp_dataverseurl",
     "INVENTORY_RPA_EXCLUDED_SKUS": "Standard,Teams",

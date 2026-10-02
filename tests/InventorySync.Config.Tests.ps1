@@ -34,21 +34,19 @@ Describe 'Inventory sync configuration' {
         $configuration.ApplicationInsightsConnectionString | Should -Be 'InstrumentationKey=test'
     }
 
-    It 'uses a daily Agent schedule by default and accepts an app-setting override' {
+    It 'validates Agent-only settings only for Agent sync' {
         $settings = @{
             INVENTORY_TENANT_ID                   = 'tenant-id'
             INVENTORY_CLIENT_ID                   = 'client-id'
             INVENTORY_CLIENT_SECRET               = 'secret'
             INVENTORY_TARGET_DATAVERSE_URL        = 'https://example.crm.dynamics.com'
-            INVENTORY_AGENT_CREATED_IN            = 'Agent Builder'
             APPLICATIONINSIGHTS_CONNECTION_STRING = 'InstrumentationKey=test'
         }
 
-        (Get-InventorySyncConfiguration -Settings $settings).AgentSchedule |
-            Should -Be '0 0 0 * * *'
-        $settings.INVENTORY_AGENT_SCHEDULE = '0 30 1 * * *'
-        (Get-InventorySyncConfiguration -Settings $settings).AgentSchedule |
-            Should -Be '0 30 1 * * *'
+        { Get-InventorySyncConfiguration -Settings $settings -SyncType RPA } |
+            Should -Not -Throw
+        { Get-InventorySyncConfiguration -Settings $settings -SyncType AgentBuilder } |
+            Should -Throw '*INVENTORY_AGENT_CREATED_IN*'
     }
 
     It 'uses configurable Dataverse logging table names' {

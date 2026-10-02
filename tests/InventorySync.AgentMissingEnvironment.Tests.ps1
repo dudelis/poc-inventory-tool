@@ -30,7 +30,6 @@ Describe 'Agent Builder environment validation' {
         $configuration = [pscustomobject] @{
             TargetDataverseUrl = 'https://example.crm.dynamics.com'
             AgentCreatedIn     = 'Agent Builder'
-            AgentSubscriptions = @()
         }
 
         $result = Invoke-AgentCreateSync -Configuration $configuration `

@@ -28,6 +28,11 @@
         'Invoke-AgentSync'
         'Invoke-RpaSync'
         'Write-InventoryTrace'
+        'Get-InventoryOperationId'
+        'Invoke-InventorySyncTimer'
+        'Invoke-InventorySyncOrchestrator'
+        'Invoke-InventorySyncActivity'
+        'Write-InventorySyncSkippedRun'
     )
     CmdletsToExport   = @()
     VariablesToExport = @()
