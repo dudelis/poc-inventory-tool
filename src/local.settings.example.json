@@ -9,6 +9,9 @@
     "INVENTORY_TENANT_ID": "<tenant-id>",
     "INVENTORY_CLIENT_ID": "<client-id>",
     "INVENTORY_CLIENT_SECRET": "@Microsoft.KeyVault(SecretUri=https://<vault>.vault.azure.net/secrets/<secret>/)",
-    "INVENTORY_TARGET_DATAVERSE_URL": "https://<environment>.crm.dynamics.com"
+    "INVENTORY_TARGET_DATAVERSE_URL": "https://<environment>.crm.dynamics.com",
+    "INVENTORY_AGENT_CREATED_IN": "Microsoft 365 Copilot Agent Builder",
+    "INVENTORY_AGENT_SCHEDULE": "0 0 0 * * *",
+    "INVENTORY_AGENT_SUBSCRIPTIONS": ""
   }
 }

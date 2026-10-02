@@ -1,0 +1,17 @@
+{
+  "bindings": [
+    {
+      "name": "Timer",
+      "type": "timerTrigger",
+      "direction": "in",
+      "schedule": "%INVENTORY_AGENT_SCHEDULE%",
+      "runOnStartup": false,
+      "useMonitor": true
+    },
+    {
+      "name": "DurableClient",
+      "type": "durableClient",
+      "direction": "in"
+    }
+  ]
+}

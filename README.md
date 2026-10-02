@@ -16,10 +16,17 @@ The app uses `APPLICATIONINSIGHTS_CONNECTION_STRING`; instrumentation-key config
 - `INVENTORY_CLIENT_ID`
 - `INVENTORY_CLIENT_SECRET`
 - `INVENTORY_TARGET_DATAVERSE_URL`
+- `INVENTORY_AGENT_CREATED_IN` (the tenant's Agent Builder `createdIn` value)
+- `INVENTORY_AGENT_SCHEDULE` (NCRONTAB, default `0 0 0 * * *`)
+- `INVENTORY_AGENT_SUBSCRIPTIONS` (optional comma-separated Resource Graph scope; empty means all accessible subscriptions)
 - `APPLICATIONINSIGHTS_CONNECTION_STRING`
 - `FUNCTIONS_WORKER_RUNTIME=powershell`
 - `FUNCTIONS_WORKER_RUNTIME_VERSION=7.6`
 - `FUNCTIONS_EXTENSION_VERSION=~4`
+
+The Agent sync timer starts the fixed `agent-builder-inventory-sync` orchestration instance. Use
+the timer function's **Test/Run** action for a manual run; an active instance causes the request
+to be skipped with a structured `RunSkipped` warning.
 
 ## Tests
 
