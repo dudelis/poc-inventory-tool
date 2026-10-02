@@ -24,11 +24,19 @@ Describe 'Agent Builder collection and creation' {
         }
     }
 
-    It 'queries only Copilot Studio agents created with the configured authoring tool' {
+    It 'queries Agent Builder agents tenant-wide without subscription scoping' {
+        $script:agentRequestBody = $null
+        Mock Invoke-InventoryHttpRequest -ModuleName InventorySync {
+            $script:agentRequestBody = $Body
+            [pscustomobject] @{
+                Body = [pscustomobject] @{ data = @([pscustomobject] @{ agentId = 'agent-1' }) }
+            }
+        }
         $agents = @(Get-AgentBuilderAgents -CreatedIn 'Microsoft 365 Copilot Agent Builder' `
-            -Subscriptions @('subscription-1') -AccessToken 'token')
+            -AccessToken 'token')
 
         $agents.agentId | Should -Be 'agent-1'
+        $script:agentRequestBody.PSObject.Properties['subscriptions'] | Should -BeNullOrEmpty
         Should -Invoke Invoke-InventoryHttpRequest -ModuleName InventorySync -Times 1 -Exactly -ParameterFilter {
             $Method -eq 'POST' -and
             $Body.query -match 'PowerPlatformResources' -and

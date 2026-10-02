@@ -8,7 +8,9 @@ Describe 'Agent Builder deletion check' {
         $collectedId = New-InventoryComponentId -EnvironmentId 'environment-1' `
             -ComponentType 5 -SourceId 'collected-agent'
         $missingId = '11111111-1111-1111-1111-111111111111'
-        $stillExistingId = '22222222-2222-2222-2222-222222222222'
+        $stillExistingSourceId = 'existing-agent'
+        $stillExistingId = New-InventoryComponentId -EnvironmentId 'environment-1' `
+            -ComponentType 5 -SourceId $stillExistingSourceId
         $inactiveId = '33333333-3333-3333-3333-333333333333'
         $script:verificationQueries = [System.Collections.Generic.List[string]]::new()
         $script:batchBodies = [System.Collections.Generic.List[string]]::new()
@@ -16,7 +18,7 @@ Describe 'Agent Builder deletion check' {
             $uriText = [string] $Uri
             if ($uriText -match 'Microsoft\.ResourceGraph/resources') {
                 $query = [string] $Body.query
-                if ($query -match 'properties\.createdIn') {
+                if ($query -match 'properties\.displayName') {
                     return [pscustomobject] @{
                         Body = [pscustomobject] @{
                             data = @([pscustomobject] @{
@@ -30,12 +32,7 @@ Describe 'Agent Builder deletion check' {
                 }
 
                 $script:verificationQueries.Add($query)
-                $data = if ($query -match [regex]::Escape($stillExistingId)) {
-                    @([pscustomobject] @{ agentId = $stillExistingId })
-                }
-                else {
-                    @()
-                }
+                $data = @([pscustomobject] @{ agentId = $stillExistingSourceId })
                 return [pscustomobject] @{ Body = [pscustomobject] @{ data = $data } }
             }
             if ($uriText -match '/palp_environments\?') {
@@ -85,7 +82,6 @@ Describe 'Agent Builder deletion check' {
         $configuration = [pscustomobject] @{
             TargetDataverseUrl = 'https://example.crm.dynamics.com'
             AgentCreatedIn = 'Agent Builder'
-            AgentSubscriptions = @()
             MaxCreatesPerRun = 10
         }
 
@@ -95,8 +91,11 @@ Describe 'Agent Builder deletion check' {
 
         $result.Status | Should -Be 'Succeeded'
         $result.Counts.MarkedDeleted | Should -Be 1
-        $script:verificationQueries | Should -HaveCount 2
-        $script:verificationQueries -join '|' | Should -Not -Match 'createdIn'
+        $script:verificationQueries | Should -HaveCount 1
+        $script:verificationQueries -join '|' | Should -Match 'createdIn'
+        $script:verificationQueries -join '|' | Should -Match 'environment-1'
+        $script:verificationQueries -join '|' | Should -Not -Match ([regex]::Escape($stillExistingId))
+        $script:verificationQueries -join '|' | Should -Not -Match ([regex]::Escape($missingId))
         $script:verificationQueries -join '|' | Should -Not -Match ([regex]::Escape($inactiveId))
         $script:batchBodies | Should -HaveCount 1
         $script:batchBodies[0] | Should -Match "PATCH palp_komponentes\(palp_id='$missingId'\)"
@@ -155,7 +154,6 @@ Describe 'Agent Builder deletion check' {
         $configuration = [pscustomobject] @{
             TargetDataverseUrl = 'https://example.crm.dynamics.com'
             AgentCreatedIn = 'Agent Builder'
-            AgentSubscriptions = @()
             MaxCreatesPerRun = 10
         }
 
@@ -184,12 +182,12 @@ Describe 'Agent Builder deletion check' {
             $uriText = [string] $Uri
             if ($uriText -match 'Microsoft\.ResourceGraph/resources') {
                 $query = [string] $Body.query
-                if ($query -match 'properties\.createdIn') {
+                if ($query -match 'properties\.displayName') {
                     return [pscustomobject] @{
                         Body = [pscustomobject] @{ data = @() }
                     }
                 }
-                if ($query -match [regex]::Escape($secondId)) {
+                if ($query -match 'environment-2') {
                     throw 'HTTP 503: targeted Resource Graph check failed'
                 }
                 return [pscustomobject] @{
@@ -227,7 +225,6 @@ Describe 'Agent Builder deletion check' {
         $configuration = [pscustomobject] @{
             TargetDataverseUrl = 'https://example.crm.dynamics.com'
             AgentCreatedIn = 'Agent Builder'
-            AgentSubscriptions = @()
             MaxCreatesPerRun = 10
         }
 
@@ -252,7 +249,7 @@ Describe 'Agent Builder deletion check' {
         Mock Invoke-InventoryHttpRequest -ModuleName InventorySync {
             $uriText = [string] $Uri
             if ($uriText -match 'Microsoft\.ResourceGraph/resources') {
-                if ([string] $Body.query -match 'properties\.createdIn') {
+                if ([string] $Body.query -match 'properties\.displayName') {
                     return [pscustomobject] @{
                         Body = [pscustomobject] @{ data = @() }
                     }
@@ -286,7 +283,6 @@ Describe 'Agent Builder deletion check' {
         $configuration = [pscustomobject] @{
             TargetDataverseUrl = 'https://example.crm.dynamics.com'
             AgentCreatedIn = 'Agent Builder'
-            AgentSubscriptions = @()
             MaxCreatesPerRun = 10
         }
 
@@ -306,7 +302,7 @@ Describe 'Agent Builder deletion check' {
         Mock Invoke-InventoryHttpRequest -ModuleName InventorySync {
             $uriText = [string] $Uri
             if ($uriText -match 'Microsoft\.ResourceGraph/resources') {
-                if ([string] $Body.query -notmatch 'properties\.createdIn') {
+                if ([string] $Body.query -notmatch 'properties\.displayName') {
                     $script:targetedChecks++
                 }
                 return [pscustomobject] @{
@@ -345,7 +341,6 @@ Describe 'Agent Builder deletion check' {
         $configuration = [pscustomobject] @{
             TargetDataverseUrl = 'https://example.crm.dynamics.com'
             AgentCreatedIn = 'Agent Builder'
-            AgentSubscriptions = @()
             MaxCreatesPerRun = 10
         }
 

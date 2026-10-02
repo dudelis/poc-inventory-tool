@@ -176,7 +176,6 @@ Describe 'Agent sync logging lifecycle' {
         $configuration = [pscustomobject] @{
             TargetDataverseUrl = 'https://example.crm.dynamics.com'
             AgentCreatedIn = 'Agent Builder'
-            AgentSubscriptions = @()
             SyncRunTable = 'custom_runs'
             SyncLogTable = 'custom_logs'
             MaxCreatesPerRun = 1000
@@ -266,7 +265,6 @@ Describe 'Agent sync logging lifecycle' {
         $configuration = [pscustomobject] @{
             TargetDataverseUrl = 'https://example.crm.dynamics.com'
             AgentCreatedIn = 'Agent Builder'
-            AgentSubscriptions = @()
             SyncRunTable = 'custom_runs'
             SyncLogTable = 'custom_logs'
         }
@@ -315,7 +313,6 @@ Describe 'Agent sync logging lifecycle' {
         $configuration = [pscustomobject] @{
             TargetDataverseUrl = 'https://example.crm.dynamics.com'
             AgentCreatedIn = 'Agent Builder'
-            AgentSubscriptions = @()
             SyncRunTable = 'custom_runs'
             SyncLogTable = 'custom_logs'
         }
@@ -374,7 +371,6 @@ Describe 'Agent sync logging lifecycle' {
         $configuration = [pscustomobject] @{
             TargetDataverseUrl = 'https://example.crm.dynamics.com'
             AgentCreatedIn = 'Agent Builder'
-            AgentSubscriptions = @()
             SyncRunTable = 'missing_runs'
             SyncLogTable = 'missing_logs'
         }

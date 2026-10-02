@@ -45,7 +45,6 @@ Describe 'Agent Builder sync' {
         $configuration = [pscustomobject] @{
             TargetDataverseUrl = 'https://example.crm.dynamics.com'
             AgentCreatedIn     = 'Agent Builder'
-            AgentSubscriptions = @()
         }
 
         $result = Invoke-AgentCreateSync -Configuration $configuration `
@@ -134,7 +133,6 @@ Describe 'Agent Builder sync' {
         $configuration = [pscustomobject] @{
             TargetDataverseUrl = 'https://example.crm.dynamics.com'
             AgentCreatedIn     = 'Agent Builder'
-            AgentSubscriptions = @()
             MaxCreatesPerRun   = 10
         }
 
@@ -206,7 +204,6 @@ Describe 'Agent Builder sync' {
         $configuration = [pscustomobject] @{
             TargetDataverseUrl = 'https://example.crm.dynamics.com'
             AgentCreatedIn     = 'Agent Builder'
-            AgentSubscriptions = @()
             MaxCreatesPerRun   = 1
         }
 

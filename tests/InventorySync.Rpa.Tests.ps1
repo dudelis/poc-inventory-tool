@@ -35,7 +35,6 @@ Describe 'RPA environment selection' {
 
         $configuration = Get-InventorySyncConfiguration -Settings $settings
 
-        $configuration.RpaSchedule | Should -Be '0 0 0 * * *'
         $configuration.RpaEnvironmentUrlColumn | Should -Be 'palp_dataverseurl'
         $configuration.RpaExcludedSkus | Should -Be @('Standard', 'Teams')
         $configuration.RpaMaxParallelEnvironments | Should -Be 10
@@ -289,7 +288,9 @@ Describe 'RPA deletion check' {
 
     It 'checks and deletes only missing desktop flows from environments read successfully' {
         $missingId = '11111111-1111-1111-1111-111111111111'
-        $existingId = '22222222-2222-2222-2222-222222222222'
+        $existingSourceId = 'existing-flow'
+        $existingId = New-InventoryComponentId -EnvironmentId 'good' `
+            -ComponentType 4 -SourceId $existingSourceId
         $failedEnvironmentId = '33333333-3333-3333-3333-333333333333'
         $skippedEnvironmentId = '44444444-4444-4444-4444-444444444444'
         $script:sourceChecks = [System.Collections.Generic.List[string]]::new()
@@ -343,12 +344,7 @@ Describe 'RPA deletion check' {
             }
             if ($uriText -match 'https://good\.crm\.dynamics\.com/.*/workflows\?') {
                 $script:sourceChecks.Add($uriText)
-                $value = if ($uriText -match [regex]::Escape($existingId)) {
-                    @([pscustomobject] @{ workflowid = $existingId })
-                }
-                else {
-                    @()
-                }
+                $value = @([pscustomobject] @{ workflowid = $existingSourceId })
                 return [pscustomobject] @{ Body = [pscustomobject] @{ value = $value } }
             }
             if ($uriText -match '/\$batch$') {
@@ -379,10 +375,12 @@ Describe 'RPA deletion check' {
 
         $result.Status | Should -Be 'Partial'
         $result.Counts.MarkedDeleted | Should -Be 1
-        $script:sourceChecks | Should -HaveCount 2
+        $script:sourceChecks | Should -HaveCount 1
         $script:sourceChecks -join '|' | Should -Not -Match 'bad\.crm'
         $script:sourceChecks -join '|' | Should -Not -Match 'skipped\.crm'
         $script:sourceChecks -join '|' | Should -Match 'category( |%20|\+)eq( |%20|\+)6'
+        $script:sourceChecks -join '|' | Should -Not -Match ([regex]::Escape($missingId))
+        $script:sourceChecks -join '|' | Should -Not -Match ([regex]::Escape($existingId))
         $script:batchBody | Should -Match "PATCH palp_komponentes\(palp_id='$missingId'\)"
         $script:batchBody | Should -Match '"palp_komponentenstatus":7'
         $script:batchBody | Should -Match '"palp_status":1'
@@ -424,12 +422,8 @@ Describe 'RPA deletion check' {
                     }
                 ) } }
             }
-            if ($uriText -match '/workflows\?' -and
-                $uriText -match [regex]::Escape($secondId)) {
-                throw 'HTTP 503: targeted workflow check failed'
-            }
             if ($uriText -match '/workflows\?') {
-                return [pscustomobject] @{ Body = [pscustomobject] @{ value = @() } }
+                throw 'HTTP 503: targeted workflow check failed'
             }
             if ($uriText -match '/\$batch$') {
                 throw 'Deletion writes must not be sent after a failed re-check.'

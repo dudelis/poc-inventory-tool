@@ -105,10 +105,9 @@ settings**. Examples are illustrative.
 | `INVENTORY_CLIENT_ID` | Yes | Client ID of the service principal registered as a Dataverse application user. | `22222222-2222-2222-2222-222222222222` |
 | `INVENTORY_CLIENT_SECRET` | Yes | Key Vault reference that Functions resolves to the client secret. Keep the trailing `/` to follow the versionless reference form shown. | `@Microsoft.KeyVault(SecretUri=https://contoso-kv.vault.azure.net/secrets/inventory-sync-client-secret/)` |
 | `INVENTORY_TARGET_DATAVERSE_URL` | Yes | Base URL of the target PALP environment. A trailing slash is accepted and removed. | `https://contoso.crm.dynamics.com` |
-| `INVENTORY_AGENT_CREATED_IN` | Yes | Exact, case-sensitive `properties.createdIn` value used by the Resource Graph Kusto `==` filter. Confirm it from real tenant data before enabling the schedule. | `Microsoft 365 Copilot Agent Builder` |
-| `INVENTORY_AGENT_SCHEDULE` | Yes | Six-field NCRONTAB expression used directly by `AgentSyncTimer`. It must exist because the trigger binding references it, even though the configuration parser has the same daily fallback. Schedules are UTC unless the Function App platform is configured otherwise. | `0 0 0 * * *` |
-| `INVENTORY_AGENT_SUBSCRIPTIONS` | No | Comma-separated subscription IDs passed to Resource Graph. Blank or absent omits the request scope and queries all subscriptions accessible to the service principal. | `33333333-3333-3333-3333-333333333333,44444444-4444-4444-4444-444444444444` |
-| `INVENTORY_RPA_SCHEDULE` | Yes | Six-field NCRONTAB expression used directly by `RpaSyncTimer`; operationally required for the same trigger-binding reason as the agent schedule. | `0 30 0 * * *` |
+| `INVENTORY_AGENT_CREATED_IN` | Agent only | Exact, case-sensitive `properties.createdIn` value used by the tenant-wide Resource Graph Kusto `==` filter. It is not loaded or required by the RPA entry points. Confirm it from real tenant data before enabling the schedule. | `Microsoft 365 Copilot Agent Builder` |
+| `INVENTORY_AGENT_SCHEDULE` | Yes | Six-field NCRONTAB expression used directly by `AgentSyncTimer`. The trigger binding requires it before function code can run. The deployment settings template contains the real daily value; change that app setting to override it. Schedules are UTC unless the Function App platform is configured otherwise. | `0 0 0 * * *` |
+| `INVENTORY_RPA_SCHEDULE` | Yes | Six-field NCRONTAB expression used directly by `RpaSyncTimer`. The deployment settings template contains the real daily value and the app setting remains configurable. | `0 0 0 * * *` |
 | `INVENTORY_RPA_ENVIRONMENT_URL_COLUMN` | No | Logical column name read from `palp_environment` for the source Dataverse base URL. Only a Dataverse-style alphanumeric/underscore logical name is accepted. | `palp_dataverseurl` (default) |
 | `INVENTORY_RPA_EXCLUDED_SKUS` | No | Case-insensitive comma-separated `palp_sku` values skipped by the RPA environment plan. Blank or absent restores the defaults; it does not mean “exclude none.” Skips are logged. | `Standard,Teams` (default) |
 | `INVENTORY_RPA_MAX_PARALLEL_ENVIRONMENTS` | No | Maximum concurrent RPA environment reads. Must be a positive integer. | `10` (default) |
@@ -136,7 +135,11 @@ settings:
 
 There is no custom Application Insights SDK. `Write-InventoryTrace` writes compact JSON
 with `timestamp`, `level`, `message`, `correlationId`, and `data`; normal Functions
-telemetry transports it.
+telemetry transports it. Timer and activity entry points capture the current
+`System.Diagnostics.Activity` trace ID. The activity that performs the sync therefore
+writes the same correlation ID as its Application Insights operation. The Durable
+orchestrator propagates its input unchanged so replay remains deterministic. Outside an
+Activity, a propagated ID is retained; only a direct call with neither uses a new GUID.
 
 ## 4. Deploy the code
 
@@ -180,7 +183,7 @@ same sync while its fixed orchestration instance is active.
    `agent-builder-inventory-sync`.
 4. In target Dataverse, find the new **Sync Run** row:
    - Sync Type is `AgentBuilder`.
-   - Run ID is a correlation GUID.
+   - Run ID is the activity trace/operation ID (or the documented local fallback).
    - Status finishes as `Succeeded` and Phase normally finishes as
      `DeletionCheck`.
    - Completed On is populated and Found/Created/Updated/Unchanged/Marked
@@ -198,7 +201,7 @@ same sync while its fixed orchestration instance is active.
    **Run**.
 2. Verify that `RpaSyncOrchestrator` and then `RpaSyncActivity` ran for fixed instance
    ID `rpa-inventory-sync`.
-3. Verify the new **Sync Run** row has Sync Type `RPA`, a correlation GUID, Completed
+3. Verify the new **Sync Run** row has Sync Type `RPA`, the activity operation ID, Completed
    On, final Phase `DeletionCheck`, expected counts, and `Succeeded` for an error-free
    run.
 4. Check `palp_komponente` type `4` for the expected desktop flows in each included
@@ -254,4 +257,4 @@ deployment record.
 | 5. Meaning of `Standard` and developer-environment policy | Confirm actual `palp_sku` values with the customer and set the complete comma-separated `INVENTORY_RPA_EXCLUDED_SKUS` list. The implemented default is `Standard,Teams`. |
 | 6. Actual Agent Builder `createdIn` value | Query representative Resource Graph data, copy the exact case-sensitive value into `INVENTORY_AGENT_CREATED_IN`, and verify Found count in the agent smoke run. |
 | 7. Tenant/client/secret/vault/target values | The project lead supplies and the operator configures `INVENTORY_TENANT_ID`, `INVENTORY_CLIENT_ID`, the Key Vault secret and `INVENTORY_CLIENT_SECRET` reference, and `INVENTORY_TARGET_DATAVERSE_URL`. Validate Key Vault reference resolution before deployment. |
-| 8. Resource Graph access role | Assign the read-only Microsoft Entra directory role `Global Reader` to the service principal at tenant scope. This is the least-privilege directory role confirmed for app-only `PowerPlatformResources` queries; subscription-level Azure RBAC `Reader` is not the resolving role. Leave `INVENTORY_AGENT_SUBSCRIPTIONS` blank for the tenant-wide query unless a tested Resource Graph scope is intentionally required. |
+| 8. Resource Graph access role | Assign the read-only Microsoft Entra directory role `Global Reader` to the service principal at tenant scope. This is the least-privilege directory role confirmed for app-only `PowerPlatformResources` queries; subscription-level Azure RBAC `Reader` is not the resolving role. Agent collection is always tenant-wide and has no subscription-scope setting. |
