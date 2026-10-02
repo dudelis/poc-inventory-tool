@@ -38,7 +38,9 @@ to be skipped with a structured `RunSkipped` warning.
 The independent RPA timer starts the fixed `rpa-inventory-sync` orchestration instance. It reads
 `palp_environment` without modifying it, scans eligible environments with bounded parallelism,
 and reconciles desktop flows only (`palp_typ = 4`). Environments that remain unreachable after
-transport retries are logged and make the run `Partial` without stopping the other scans.
+transport retries are logged and make the run `Partial` without stopping the other scans. Its
+deletion check considers only environments read successfully in that run, rechecks each missing
+desktop flow in the source Dataverse, and restores previously deleted flows that reappear.
 
 Each Agent run reads the existing type-5 component rows once, then creates missing rows, patches
 only changed technical fields, and sends no write for unchanged rows. Governance fields are set
