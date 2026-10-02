@@ -2,6 +2,12 @@
 
 PowerShell 7.6 Azure Functions project for synchronizing Power Platform inventory.
 
+## Documentation
+
+See the [customer operations guide](docs/operations-guide.md) for prerequisites,
+least-privilege access, every app setting, Key Vault setup, logging-solution import,
+deployment, smoke runs, Application Insights checks, and resolution of the spec TBDs.
+
 ## Local setup
 
 1. Copy `src/local.settings.example.json` to `src/local.settings.json`.
