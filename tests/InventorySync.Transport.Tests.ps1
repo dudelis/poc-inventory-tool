@@ -80,6 +80,25 @@ Describe 'Inventory HTTP transport' {
         $script:attempt | Should -Be 3
     }
 
+    It 'retries transient environment timeouts before returning the full final error' {
+        $script:attempt = 0
+        $invoker = {
+            param($request)
+            $script:attempt++
+            [pscustomobject] @{
+                StatusCode = 504
+                Headers    = @{}
+                Content    = '{"error":{"code":"GatewayTimeout","message":"Environment request timed out"}}'
+            }
+        }
+
+        {
+            Invoke-InventoryHttpRequest -Uri 'https://environment.crm.dynamics.com/api/data/v9.2/workflows' `
+                -MaxRetryCount 2 -Invoker $invoker -SleepAction { param($seconds) }
+        } | Should -Throw '*HTTP 504*Environment request timed out*'
+        $script:attempt | Should -Be 3
+    }
+
     It 'reports a nonstandard JSON error without masking the HTTP status' {
         $invoker = {
             param($request)

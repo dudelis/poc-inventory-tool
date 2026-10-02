@@ -12,6 +12,9 @@
         'Get-DataversePagedRecords'
         'Invoke-ResourceGraphPagedQuery'
         'Get-AgentBuilderAgents'
+        'Get-RpaEnvironmentPlan'
+        'Get-RpaDesktopFlows'
+        'Invoke-RpaEnvironmentFanOut'
         'New-InventoryComponentId'
         'New-InventoryComponentReconciliationPlan'
         'New-AgentComponentCreatePlan'
@@ -20,8 +23,10 @@
         'Complete-InventorySyncRun'
         'Write-InventorySyncLog'
         'Write-AgentSyncSkippedRun'
+        'Write-RpaSyncSkippedRun'
         'Invoke-AgentCreateSync'
         'Invoke-AgentSync'
+        'Invoke-RpaSync'
         'Write-InventoryTrace'
     )
     CmdletsToExport   = @()
