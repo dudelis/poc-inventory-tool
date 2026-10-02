@@ -14,6 +14,7 @@
     "INVENTORY_AGENT_SCHEDULE": "0 0 0 * * *",
     "INVENTORY_AGENT_SUBSCRIPTIONS": "",
     "INVENTORY_SYNC_RUN_TABLE": "invs_syncruns",
-    "INVENTORY_SYNC_LOG_TABLE": "invs_synclogs"
+    "INVENTORY_SYNC_LOG_TABLE": "invs_synclogs",
+    "INVENTORY_MAX_CREATES_PER_RUN": "1000"
   }
 }

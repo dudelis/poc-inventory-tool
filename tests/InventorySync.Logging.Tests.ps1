@@ -179,9 +179,10 @@ Describe 'Agent sync logging lifecycle' {
             AgentSubscriptions = @()
             SyncRunTable = 'custom_runs'
             SyncLogTable = 'custom_logs'
+            MaxCreatesPerRun = 1000
         }
 
-        $result = Invoke-AgentCreateSync -Configuration $configuration `
+        $result = Invoke-AgentSync -Configuration $configuration `
             -ResourceGraphAccessToken 'graph-token' -DataverseAccessToken 'target-token' `
             -Now ([datetimeoffset] '2026-10-02T10:00:00Z') `
             -CorrelationId '11111111-1111-1111-1111-111111111111' `

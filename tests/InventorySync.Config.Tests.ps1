@@ -68,4 +68,22 @@ Describe 'Inventory sync configuration' {
         $configuration.SyncRunTable | Should -Be 'custom_runs'
         $configuration.SyncLogTable | Should -Be 'custom_logs'
     }
+
+    It 'reads the per-run creation cap from app settings' {
+        $settings = @{
+            INVENTORY_TENANT_ID                   = 'tenant-id'
+            INVENTORY_CLIENT_ID                   = 'client-id'
+            INVENTORY_CLIENT_SECRET               = 'secret'
+            INVENTORY_TARGET_DATAVERSE_URL        = 'https://example.crm.dynamics.com'
+            INVENTORY_AGENT_CREATED_IN            = 'Agent Builder'
+            INVENTORY_MAX_CREATES_PER_RUN         = '12'
+            APPLICATIONINSIGHTS_CONNECTION_STRING = 'InstrumentationKey=test'
+        }
+
+        (Get-InventorySyncConfiguration -Settings $settings).MaxCreatesPerRun |
+            Should -Be 12
+        $settings.Remove('INVENTORY_MAX_CREATES_PER_RUN')
+        (Get-InventorySyncConfiguration -Settings $settings).MaxCreatesPerRun |
+            Should -Be 1000
+    }
 }
