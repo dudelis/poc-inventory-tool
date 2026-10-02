@@ -122,6 +122,7 @@ Describe 'RPA fan-out and reconciliation' {
                 Logs = @()
             }
         }
+
         $environments = @(
             [pscustomobject] @{ palp_id = 'one'; palp_name = 'One'; DataverseUrl = 'https://one.example' }
             [pscustomobject] @{ palp_id = 'two'; palp_name = 'Two'; DataverseUrl = 'https://two.example' }
@@ -198,6 +199,7 @@ Describe 'RPA fan-out and reconciliation' {
                 Logs = @()
             }
         }
+
         $configuration = [pscustomobject] @{
             TargetDataverseUrl = 'https://target.crm.dynamics.com'
             RpaEnvironmentUrlColumn = 'palp_dataverseurl'
@@ -272,9 +274,265 @@ Describe 'RPA fan-out and reconciliation' {
         $detail = $script:requests | Where-Object { $_.Uri -match '/custom_logs$' }
         $runCreate.Body.invs_synctype | Should -Be 100000000
         $runComplete.Body.invs_status | Should -Be 100000002
+        $runComplete.Body.invs_phase | Should -Be 100000002
         $runComplete.Body.invs_environmentsfailed | Should -Be 1
         $detail.Body.invs_category | Should -Be 100000001
         $detail.Body.invs_errormessage | Should -Be 'HTTP 403: complete permission failure detail'
         $detail.Body.invs_correlationid | Should -Be 'rpa-correlation'
+    }
+}
+
+Describe 'RPA deletion check' {
+    BeforeEach {
+        Clear-InventoryTokenCache
+    }
+
+    It 'checks and deletes only missing desktop flows from environments read successfully' {
+        $missingId = '11111111-1111-1111-1111-111111111111'
+        $existingId = '22222222-2222-2222-2222-222222222222'
+        $failedEnvironmentId = '33333333-3333-3333-3333-333333333333'
+        $skippedEnvironmentId = '44444444-4444-4444-4444-444444444444'
+        $script:sourceChecks = [System.Collections.Generic.List[string]]::new()
+        $script:batchBody = $null
+        Mock Invoke-InventoryHttpRequest -ModuleName InventorySync {
+            $uriText = [string] $Uri
+            if ($uriText -match 'login\.microsoftonline\.com') {
+                return [pscustomobject] @{ Body = [pscustomobject] @{
+                    access_token = 'source-token'; expires_in = 3600
+                } }
+            }
+            if ($uriText -match '/palp_environments\?') {
+                return [pscustomobject] @{ Body = [pscustomobject] @{ value = @(
+                    [pscustomobject] @{
+                        palp_id = 'good'; palp_name = 'Good'; palp_sku = 'Production'
+                        statecode = 0; palp_dataverseurl = 'https://good.crm.dynamics.com'
+                    },
+                    [pscustomobject] @{
+                        palp_id = 'bad'; palp_name = 'Bad'; palp_sku = 'Production'
+                        statecode = 0; palp_dataverseurl = 'https://bad.crm.dynamics.com'
+                    },
+                    [pscustomobject] @{
+                        palp_id = 'skipped'; palp_name = 'Skipped'; palp_sku = 'Standard'
+                        statecode = 0; palp_dataverseurl = 'https://skipped.crm.dynamics.com'
+                    }
+                ) } }
+            }
+            if ($uriText -match '/palp_komponentes\?') {
+                return [pscustomobject] @{ Body = [pscustomobject] @{ value = @(
+                    [pscustomobject] @{
+                        palp_id = $missingId; palp_typ = 4
+                        palp_environment = [pscustomobject] @{ palp_id = 'good' }
+                        palp_komponentenstatus = 0; palp_status = 0
+                    },
+                    [pscustomobject] @{
+                        palp_id = $existingId; palp_typ = 4
+                        palp_environment = [pscustomobject] @{ palp_id = 'good' }
+                        palp_komponentenstatus = 0; palp_status = 0
+                    },
+                    [pscustomobject] @{
+                        palp_id = $failedEnvironmentId; palp_typ = 4
+                        palp_environment = [pscustomobject] @{ palp_id = 'bad' }
+                        palp_komponentenstatus = 0; palp_status = 0
+                    },
+                    [pscustomobject] @{
+                        palp_id = $skippedEnvironmentId; palp_typ = 4
+                        palp_environment = [pscustomobject] @{ palp_id = 'skipped' }
+                        palp_komponentenstatus = 0; palp_status = 0
+                    }
+                ) } }
+            }
+            if ($uriText -match 'https://good\.crm\.dynamics\.com/.*/workflows\?') {
+                $script:sourceChecks.Add($uriText)
+                $value = if ($uriText -match [regex]::Escape($existingId)) {
+                    @([pscustomobject] @{ workflowid = $existingId })
+                }
+                else {
+                    @()
+                }
+                return [pscustomobject] @{ Body = [pscustomobject] @{ value = $value } }
+            }
+            if ($uriText -match '/\$batch$') {
+                $script:batchBody = [string] $Body
+                return [pscustomobject] @{ StatusCode = 200; Body = $null }
+            }
+            throw "Unexpected request: $uriText"
+        }
+        $collector = {
+            param($environment, $configuration)
+            if ($environment.palp_id -eq 'bad') {
+                throw 'HTTP 403: source environment cannot be read'
+            }
+            [pscustomobject] @{ Flows = @(); Logs = @(); Found = 0 }
+        }
+        $configuration = [pscustomobject] @{
+            TenantId = 'tenant'; ClientId = 'client'; ClientSecret = 'secret'
+            TargetDataverseUrl = 'https://target.crm.dynamics.com'
+            RpaEnvironmentUrlColumn = 'palp_dataverseurl'
+            RpaExcludedSkus = @('Standard', 'Teams')
+            RpaMaxParallelEnvironments = 2
+            MaxCreatesPerRun = 10
+        }
+
+        $result = Invoke-RpaSync -Configuration $configuration `
+            -DataverseAccessToken 'target-token' -EnvironmentCollector $collector `
+            -Now ([datetimeoffset] '2026-10-02T10:00:00Z')
+
+        $result.Status | Should -Be 'Partial'
+        $result.Counts.MarkedDeleted | Should -Be 1
+        $script:sourceChecks | Should -HaveCount 2
+        $script:sourceChecks -join '|' | Should -Not -Match 'bad\.crm'
+        $script:sourceChecks -join '|' | Should -Not -Match 'skipped\.crm'
+        $script:sourceChecks -join '|' | Should -Match 'category( |%20|\+)eq( |%20|\+)6'
+        $script:batchBody | Should -Match "PATCH palp_komponentes\(palp_id='$missingId'\)"
+        $script:batchBody | Should -Match '"palp_komponentenstatus":7'
+        $script:batchBody | Should -Match '"palp_status":1'
+        $script:batchBody | Should -Match '"palp_letztestatusaenderung":"2026-10-02T10:00:00'
+        $script:batchBody | Should -Not -Match ([regex]::Escape($existingId))
+        $script:batchBody | Should -Not -Match ([regex]::Escape($failedEnvironmentId))
+        $script:batchBody | Should -Not -Match ([regex]::Escape($skippedEnvironmentId))
+    }
+
+    It 'marks nothing and logs VerifyFailed when a targeted workflow re-check fails' {
+        $firstId = '11111111-1111-1111-1111-111111111111'
+        $secondId = '22222222-2222-2222-2222-222222222222'
+        Mock Invoke-InventoryHttpRequest -ModuleName InventorySync {
+            $uriText = [string] $Uri
+            if ($uriText -match 'login\.microsoftonline\.com') {
+                return [pscustomobject] @{ Body = [pscustomobject] @{
+                    access_token = 'source-token'; expires_in = 3600
+                } }
+            }
+            if ($uriText -match '/palp_environments\?') {
+                return [pscustomobject] @{ Body = [pscustomobject] @{ value = @(
+                    [pscustomobject] @{
+                        palp_id = 'good'; palp_name = 'Good'; palp_sku = 'Production'
+                        statecode = 0; palp_dataverseurl = 'https://good.crm.dynamics.com'
+                    }
+                ) } }
+            }
+            if ($uriText -match '/palp_komponentes\?') {
+                return [pscustomobject] @{ Body = [pscustomobject] @{ value = @(
+                    [pscustomobject] @{
+                        palp_id = $firstId; palp_typ = 4
+                        palp_environment = [pscustomobject] @{ palp_id = 'good' }
+                        palp_komponentenstatus = 0; palp_status = 0
+                    },
+                    [pscustomobject] @{
+                        palp_id = $secondId; palp_typ = 4
+                        palp_environment = [pscustomobject] @{ palp_id = 'good' }
+                        palp_komponentenstatus = 0; palp_status = 0
+                    }
+                ) } }
+            }
+            if ($uriText -match '/workflows\?' -and
+                $uriText -match [regex]::Escape($secondId)) {
+                throw 'HTTP 503: targeted workflow check failed'
+            }
+            if ($uriText -match '/workflows\?') {
+                return [pscustomobject] @{ Body = [pscustomobject] @{ value = @() } }
+            }
+            if ($uriText -match '/\$batch$') {
+                throw 'Deletion writes must not be sent after a failed re-check.'
+            }
+            throw "Unexpected request: $uriText"
+        }
+        $collector = {
+            param($environment, $configuration)
+            [pscustomobject] @{ Flows = @(); Logs = @(); Found = 0 }
+        }
+        $configuration = [pscustomobject] @{
+            TenantId = 'tenant'; ClientId = 'client'; ClientSecret = 'secret'
+            TargetDataverseUrl = 'https://target.crm.dynamics.com'
+            RpaEnvironmentUrlColumn = 'palp_dataverseurl'
+            RpaExcludedSkus = @('Standard', 'Teams')
+            RpaMaxParallelEnvironments = 1
+            MaxCreatesPerRun = 10
+        }
+
+        $result = Invoke-RpaSync -Configuration $configuration `
+            -DataverseAccessToken 'target-token' -EnvironmentCollector $collector `
+            -Now ([datetimeoffset] '2026-10-02T10:00:00Z') -ErrorAction SilentlyContinue
+
+        $result.Status | Should -Be 'Partial'
+        $result.Counts.MarkedDeleted | Should -Be 0
+        $result.Counts.Errors | Should -Be 1
+        $result.Batch.Operations | Should -Be 0
+        $result.Logs | Should -HaveCount 1
+        $result.Logs[0].Category | Should -Be 'VerifyFailed'
+        $result.Logs[0].Message | Should -Match 'targeted workflow check failed'
+        Should -Invoke Invoke-InventoryHttpRequest -ModuleName InventorySync `
+            -ParameterFilter { [string] $Uri -match '/\$batch$' } -Times 0 -Exactly
+    }
+
+    It 'restores a collected deleted desktop flow and records the restore' {
+        $componentId = New-InventoryComponentId -EnvironmentId 'good' `
+            -ComponentType 4 -SourceId 'restored-flow'
+        $script:batchBody = $null
+        Mock Invoke-InventoryHttpRequest -ModuleName InventorySync {
+            $uriText = [string] $Uri
+            if ($uriText -match '/palp_environments\?') {
+                return [pscustomobject] @{ Body = [pscustomobject] @{ value = @(
+                    [pscustomobject] @{
+                        palp_id = 'good'; palp_name = 'Good'; palp_sku = 'Production'
+                        statecode = 0; palp_dataverseurl = 'https://good.crm.dynamics.com'
+                    }
+                ) } }
+            }
+            if ($uriText -match '/palp_komponentes\?') {
+                return [pscustomobject] @{ Body = [pscustomobject] @{ value = @(
+                    [pscustomobject] @{
+                        palp_id = $componentId; palp_typ = 4; palp_titel = 'Restored'
+                        palp_besitzerobjectid = 'owner'; palp_beschreibung = 'Description'
+                        palp_environment = [pscustomobject] @{ palp_id = 'good' }
+                        palp_urspruenglicherstelltam = '2026-09-01T08:00:00Z'
+                        palp_urspruenglichgeaendertam = '2026-09-02T09:00:00Z'
+                        palp_komponentenstatus = 7; palp_status = 1
+                    }
+                ) } }
+            }
+            if ($uriText -match '/\$batch$') {
+                $script:batchBody = [string] $Body
+                return [pscustomobject] @{ StatusCode = 200; Body = $null }
+            }
+            throw "Unexpected request: $uriText"
+        }
+        $collector = {
+            param($environment, $configuration)
+            [pscustomobject] @{
+                Flows = @([pscustomobject] @{
+                    SourceId = 'restored-flow'; EnvironmentId = 'good'; Title = 'Restored'
+                    OwnerObjectId = 'owner'; Description = 'Description'
+                    SourceCreatedAt = '2026-09-01T08:00:00Z'
+                    SourceModifiedAt = '2026-09-02T09:00:00Z'
+                })
+                Logs = @()
+                Found = 1
+            }
+        }
+        $configuration = [pscustomobject] @{
+            TargetDataverseUrl = 'https://target.crm.dynamics.com'
+            RpaEnvironmentUrlColumn = 'palp_dataverseurl'
+            RpaExcludedSkus = @('Standard', 'Teams')
+            RpaMaxParallelEnvironments = 1
+            MaxCreatesPerRun = 10
+        }
+
+        $result = Invoke-RpaSync -Configuration $configuration `
+            -DataverseAccessToken 'target-token' -EnvironmentCollector $collector `
+            -Now ([datetimeoffset] '2026-10-02T10:00:00Z') `
+            -WarningAction SilentlyContinue
+
+        $result.Status | Should -Be 'Succeeded'
+        $result.Counts.Restored | Should -Be 1
+        $result.Counts.Updated | Should -Be 0
+        $result.Logs | Should -HaveCount 1
+        $result.Logs[0].Category | Should -Be 'Restored'
+        $result.Logs[0].ComponentId | Should -Be 'restored-flow'
+        $script:batchBody | Should -Match "PATCH palp_komponentes\(palp_id='$componentId'\)"
+        $script:batchBody | Should -Match '"palp_komponentenstatus":0'
+        $script:batchBody | Should -Match '"palp_status":0'
+        $script:batchBody | Should -Match '"palp_letztestatusaenderung":"2026-10-02T10:00:00'
+        Should -Invoke Invoke-InventoryHttpRequest -ModuleName InventorySync `
+            -ParameterFilter { [string] $Uri -match '/workflows\?' } -Times 0 -Exactly
     }
 }
