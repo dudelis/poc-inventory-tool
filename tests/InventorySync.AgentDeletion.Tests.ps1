@@ -92,7 +92,7 @@ Describe 'Agent Builder deletion check' {
         $result.Status | Should -Be 'Succeeded'
         $result.Counts.MarkedDeleted | Should -Be 1
         $script:verificationQueries | Should -HaveCount 1
-        $script:verificationQueries -join '|' | Should -Match 'createdIn'
+        $script:verificationQueries -join '|' | Should -Not -Match 'createdIn'
         $script:verificationQueries -join '|' | Should -Match 'environment-1'
         $script:verificationQueries -join '|' | Should -Not -Match ([regex]::Escape($stillExistingId))
         $script:verificationQueries -join '|' | Should -Not -Match ([regex]::Escape($missingId))
@@ -104,6 +104,87 @@ Describe 'Agent Builder deletion check' {
         $script:batchBodies[0] | Should -Match '"palp_letztestatusaenderung":"2026-10-02T10:00:00'
         $script:batchBodies[0] | Should -Not -Match ([regex]::Escape($stillExistingId))
         $script:batchBodies[0] | Should -Not -Match 'DELETE '
+    }
+
+    It 'marks nothing deleted when the configured createdIn value no longer matches agents that still exist' {
+        $tenantAgents = @(
+            [pscustomobject] @{
+                agentId = 'renamed-agent-1'; title = 'One'; description = ''
+                environmentId = 'environment-1'; ownerId = 'owner-1'
+                createdAt = '2026-09-01T08:00:00Z'; modifiedAt = '2026-09-02T09:00:00Z'
+                createdIn = 'Copilot Studio Lite'
+            },
+            [pscustomobject] @{
+                agentId = 'renamed-agent-2'; title = 'Two'; description = ''
+                environmentId = 'environment-1'; ownerId = 'owner-2'
+                createdAt = '2026-09-01T08:00:00Z'; modifiedAt = '2026-09-02T09:00:00Z'
+                createdIn = 'Copilot Studio Lite'
+            }
+        )
+        $firstId = New-InventoryComponentId -EnvironmentId 'environment-1' `
+            -ComponentType 5 -SourceId 'renamed-agent-1'
+        $secondId = New-InventoryComponentId -EnvironmentId 'environment-1' `
+            -ComponentType 5 -SourceId 'renamed-agent-2'
+        $script:batchBodies = [System.Collections.Generic.List[string]]::new()
+        Mock Invoke-InventoryHttpRequest -ModuleName InventorySync {
+            $uriText = [string] $Uri
+            if ($uriText -match 'Microsoft\.ResourceGraph/resources') {
+                $query = [string] $Body.query
+                $result = @($tenantAgents)
+                $createdInFilter = [regex]::Match($query, 'createdIn\)\s*==\s*"([^"]*)"')
+                if ($createdInFilter.Success) {
+                    $result = @($result | Where-Object createdIn -CEQ $createdInFilter.Groups[1].Value)
+                }
+                $environmentFilter = [regex]::Match($query, 'environmentId\)\s*=~\s*"([^"]*)"')
+                if ($environmentFilter.Success) {
+                    $result = @($result | Where-Object environmentId -EQ $environmentFilter.Groups[1].Value)
+                }
+                return [pscustomobject] @{ Body = [pscustomobject] @{ data = $result } }
+            }
+            if ($uriText -match '/palp_environments\?') {
+                return [pscustomobject] @{
+                    Body = [pscustomobject] @{
+                        value = @([pscustomobject] @{ palp_id = 'environment-1' })
+                    }
+                }
+            }
+            if ($uriText -match '/palp_komponentes\?') {
+                return [pscustomobject] @{
+                    Body = [pscustomobject] @{
+                        value = @(
+                            [pscustomobject] @{
+                                palp_id = $firstId; palp_typ = 5
+                                palp_environment = [pscustomobject] @{ palp_id = 'environment-1' }
+                                palp_komponentenstatus = 0; palp_status = 0
+                            },
+                            [pscustomobject] @{
+                                palp_id = $secondId; palp_typ = 5
+                                palp_environment = [pscustomobject] @{ palp_id = 'environment-1' }
+                                palp_komponentenstatus = 0; palp_status = 0
+                            }
+                        )
+                    }
+                }
+            }
+            if ($uriText -match '/\$batch$') {
+                $script:batchBodies.Add([string] $Body)
+                return [pscustomobject] @{ StatusCode = 200; Body = $null }
+            }
+            throw "Unexpected request: $uriText"
+        }
+        $configuration = [pscustomobject] @{
+            TargetDataverseUrl = 'https://example.crm.dynamics.com'
+            AgentCreatedIn = 'Microsoft 365 Copilot Agent Builder'
+            MaxCreatesPerRun = 10
+        }
+
+        $result = Invoke-AgentSync -Configuration $configuration `
+            -ResourceGraphAccessToken 'graph-token' -DataverseAccessToken 'target-token' `
+            -Now ([datetimeoffset] '2026-10-02T10:00:00Z')
+
+        $result.Counts.Found | Should -Be 0
+        $result.Counts.MarkedDeleted | Should -Be 0
+        ($script:batchBodies -join '|') | Should -Not -Match '"palp_komponentenstatus":7'
     }
 
     It 'restores a collected deleted row and records it in the result' {

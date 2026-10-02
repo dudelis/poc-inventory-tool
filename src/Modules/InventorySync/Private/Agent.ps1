@@ -306,7 +306,6 @@ function Invoke-AgentSyncCore {
             $verificationAction = {
                 param($candidates)
                 Get-MissingAgentCandidateIds -Candidates $candidates `
-                    -CreatedIn $Configuration.AgentCreatedIn `
                     -AccessToken $ResourceGraphAccessToken
             }
             $deletionResult = Invoke-InventoryDeletionCheck `

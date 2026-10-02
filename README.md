@@ -4,6 +4,9 @@ PowerShell 7.6 Azure Functions project for synchronizing Power Platform inventor
 
 ## Documentation
 
+Start with the [prerequisites](docs/prerequisites.md): Azure resources, Key Vault,
+Entra and Dataverse permissions, and the values to collect before deployment.
+
 See the [customer operations guide](docs/operations-guide.md) for prerequisites,
 least-privilege access, every app setting, Key Vault setup, logging-solution import,
 deployment, smoke runs, Application Insights checks, and resolution of the spec TBDs.
@@ -54,8 +57,10 @@ previously deleted flows that reappear.
 Each Agent run reads the existing type-5 component rows once, then creates missing rows, patches
 only changed technical fields, and sends no write for unchanged rows. Governance fields are set
 when a component is created, restored, or confirmed deleted. After a complete collect/write phase,
-active rows outside the collected key set are rechecked by candidate environment and configured
-`createdIn` type in a tenant-wide Resource Graph query. Source agent IDs are converted to the same
+active rows outside the collected key set are rechecked per candidate environment in a
+tenant-wide Resource Graph query of all Copilot Studio agents, deliberately without the
+`createdIn` filter, so a wrong or renamed `createdIn` value cannot mark existing agents as
+deleted. Source agent IDs are converted to the same
 deterministic target keys before comparison, so a synthetic `palp_id` is never queried as a source
 ID. Confirmed-missing rows are marked `Geloescht`/`Inaktiv`; a failed or incomplete recheck marks
 nothing. Deleted rows that reappear are restored to `Neu`/`Aktiv`. Rows are never physically

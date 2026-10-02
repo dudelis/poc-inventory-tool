@@ -54,7 +54,6 @@ function Get-InventoryDeletionCandidates {
 function Get-MissingAgentCandidateIds {
     param(
         [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $Candidates,
-        [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $CreatedIn,
         [Parameter(Mandatory)] [string] $AccessToken
     )
 
@@ -66,12 +65,11 @@ function Get-MissingAgentCandidateIds {
             throw 'An Agent deletion candidate has no source environment identity.'
         }
         $environmentLiteral = $environmentId.Replace('\', '\\').Replace('"', '\"')
-        $createdInLiteral = $CreatedIn.Replace('\', '\\').Replace('"', '\"')
+        # Deliberately no createdIn filter: the re-check must be independent of the collection filter.
         $query = @"
 PowerPlatformResources
 | where type =~ "microsoft.copilotstudio/agents"
 | extend properties = parse_json(properties)
-| where tostring(properties.createdIn) == "$createdInLiteral"
 | where tostring(properties.environmentId) =~ "$environmentLiteral"
 | project agentId = tostring(name)
 "@
