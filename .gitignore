@@ -1,2 +1,4 @@
 ﻿# Customer solution export (confidential, not for public repo)
 customer-db/
+src/local.settings.json
+testResults.xml
