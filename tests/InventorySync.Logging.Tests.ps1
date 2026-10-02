@@ -212,11 +212,19 @@ Describe 'Agent sync logging lifecycle' {
         $runUpdates[0].Body.invs_found | Should -Be 2
         $runUpdates[0].Body.invs_created | Should -Be 1
         $runUpdates[0].Body.invs_errors | Should -Be 1
-        $details | Should -HaveCount 1
-        $details[0].Body.invs_category | Should -Be 100000009
-        $details[0].Body.invs_componentid | Should -Be 'agent-2'
-        $details[0].Body.invs_correlationid |
+        $details | Should -HaveCount 2
+        $skippedAgent = @($details | Where-Object {
+            $_.Body.invs_componentid -eq 'agent-2'
+        })
+        $skippedDeletion = @($details | Where-Object {
+            $_.Body.invs_operation -eq 'Delete'
+        })
+        $skippedAgent | Should -HaveCount 1
+        $skippedAgent[0].Body.invs_category | Should -Be 100000009
+        $skippedAgent[0].Body.invs_correlationid |
             Should -Be '11111111-1111-1111-1111-111111111111'
+        $skippedDeletion | Should -HaveCount 1
+        $skippedDeletion[0].Body.invs_category | Should -Be 100000009
     }
 
     It 'records a write failure without abandoning the run lifecycle' {

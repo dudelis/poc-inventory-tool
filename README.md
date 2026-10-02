@@ -33,7 +33,11 @@ to be skipped with a structured `RunSkipped` warning.
 
 Each Agent run reads the existing type-5 component rows once, then creates missing rows, patches
 only changed technical fields, and sends no write for unchanged rows. Governance fields are set
-only when a component is created.
+when a component is created, restored, or confirmed deleted. After a complete collect/write phase,
+active rows outside the collected key set are rechecked individually in Resource Graph without the
+`createdIn` filter. Confirmed-missing rows are marked `Geloescht`/`Inaktiv`; a failed or incomplete
+recheck marks nothing. Deleted rows that reappear are restored to `Neu`/`Aktiv`. Rows are never
+physically deleted.
 
 The separate unmanaged logging solution is in `solutions\InventorySyncLogging`.
 Until it is imported, or whenever a logging write fails, sync processing continues
