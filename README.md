@@ -19,6 +19,10 @@ The app uses `APPLICATIONINSIGHTS_CONNECTION_STRING`; instrumentation-key config
 - `INVENTORY_AGENT_CREATED_IN` (the tenant's Agent Builder `createdIn` value)
 - `INVENTORY_AGENT_SCHEDULE` (NCRONTAB, default `0 0 0 * * *`)
 - `INVENTORY_AGENT_SUBSCRIPTIONS` (optional comma-separated Resource Graph scope; empty means all accessible subscriptions)
+- `INVENTORY_RPA_SCHEDULE` (NCRONTAB, default `0 0 0 * * *`)
+- `INVENTORY_RPA_ENVIRONMENT_URL_COLUMN` (optional Environment-table URL column, default `palp_dataverseurl`)
+- `INVENTORY_RPA_EXCLUDED_SKUS` (optional comma-separated list, default `Standard,Teams`)
+- `INVENTORY_RPA_MAX_PARALLEL_ENVIRONMENTS` (positive integer, default `10`)
 - `INVENTORY_SYNC_RUN_TABLE` (optional Sync Run entity-set name, default `invs_syncruns`)
 - `INVENTORY_SYNC_LOG_TABLE` (optional Sync Log entity-set name, default `invs_synclogs`)
 - `INVENTORY_MAX_CREATES_PER_RUN` (non-negative integer, default `1000`; overflow is skipped and logged)
@@ -30,6 +34,11 @@ The app uses `APPLICATIONINSIGHTS_CONNECTION_STRING`; instrumentation-key config
 The Agent sync timer starts the fixed `agent-builder-inventory-sync` orchestration instance. Use
 the timer function's **Test/Run** action for a manual run; an active instance causes the request
 to be skipped with a structured `RunSkipped` warning.
+
+The independent RPA timer starts the fixed `rpa-inventory-sync` orchestration instance. It reads
+`palp_environment` without modifying it, scans eligible environments with bounded parallelism,
+and reconciles desktop flows only (`palp_typ = 4`). Environments that remain unreachable after
+transport retries are logged and make the run `Partial` without stopping the other scans.
 
 Each Agent run reads the existing type-5 component rows once, then creates missing rows, patches
 only changed technical fields, and sends no write for unchanged rows. Governance fields are set
