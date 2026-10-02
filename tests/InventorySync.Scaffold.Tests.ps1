@@ -13,12 +13,28 @@ Describe 'PowerShell Azure Functions scaffold' {
         $settings.Values.FUNCTIONS_EXTENSION_VERSION | Should -Be '~4'
     }
 
-    It 'uses the standalone Durable PowerShell SDK' {
-        $requirements = Import-PowerShellDataFile (Join-Path $projectRoot 'requirements.psd1')
+    It 'loads the bundled standalone Durable SDK from the profile, as Flex Consumption requires' {
+        $profilePath = Join-Path $projectRoot 'profile.ps1'
+        $modulesPath = Join-Path $projectRoot 'Modules'
+        $probe = "`$env:PSModulePath = '$modulesPath' + [IO.Path]::PathSeparator + `$env:PSModulePath; " +
+            ". '$profilePath'; " +
+            "Get-Module AzureFunctions.PowerShell.Durable.SDK | " +
+            "ForEach-Object { `$_.Version.ToString() + '|' + `$_.ModuleBase }"
+        $loaded = & pwsh -NoProfile -NonInteractive -Command $probe
+
+        $loaded | Should -HaveCount 1
+        $version, $moduleBase = ([string] $loaded).Split('|')
+        $version | Should -Be '2.4.0'
+        $moduleBase | Should -BeLike "$((Resolve-Path $modulesPath).Path)*"
+    }
+
+    It 'enables the standalone Durable SDK and does not rely on managed dependencies' {
+        $settings = Get-Content (Join-Path $projectRoot 'local.settings.example.json') -Raw | ConvertFrom-Json
         $hostConfiguration = Get-Content (Join-Path $projectRoot 'host.json') -Raw | ConvertFrom-Json
 
-        $requirements['AzureFunctions.PowerShell.Durable.SDK'] | Should -Be '2.*'
-        $hostConfiguration.managedDependency.enabled | Should -BeTrue
+        $settings.Values.ExternalDurablePowerShellSDK | Should -Be 'true'
+        Join-Path $projectRoot 'requirements.psd1' | Should -Not -Exist
+        $hostConfiguration.PSObject.Properties['managedDependency'] | Should -BeNullOrEmpty
     }
 
     It 'configures Application Insights by connection string only' {

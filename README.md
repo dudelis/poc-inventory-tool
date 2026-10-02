@@ -40,6 +40,8 @@ The app uses `APPLICATIONINSIGHTS_CONNECTION_STRING`; instrumentation-key config
 - `APPLICATIONINSIGHTS_CONNECTION_STRING`
 - `FUNCTIONS_WORKER_RUNTIME=powershell`
 - `FUNCTIONS_WORKER_RUNTIME_VERSION=7.6`
+- `ExternalDurablePowerShellSDK=true` (uses the standalone Durable SDK bundled in
+  `src/Modules`)
 - `FUNCTIONS_EXTENSION_VERSION=~4`
 
 The Agent sync timer starts the fixed `agent-builder-inventory-sync` orchestration instance. Use

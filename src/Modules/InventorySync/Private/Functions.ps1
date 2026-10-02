@@ -20,7 +20,18 @@ function Invoke-InventorySyncTimer {
         }
     }
     $correlationId = Get-InventoryOperationId
-    $status = Get-DurableStatus -InstanceId $definition.InstanceId -DurableClient $DurableClient
+    try {
+        $status = Get-DurableStatus -InstanceId $definition.InstanceId -DurableClient $DurableClient
+    }
+    catch {
+        $response = $_.Exception.PSObject.Properties['Response']
+        if ($null -eq $response -or $null -eq $response.Value -or
+            [int] $response.Value.StatusCode -ne 404) {
+            throw
+        }
+        # 404 means the fixed instance has never been created, so no run is active.
+        $status = $null
+    }
     $activeStatuses = @('Pending', 'Running', 'ContinuedAsNew', 'Suspended')
 
     if ($null -ne $status -and [string] $status.RuntimeStatus -in $activeStatuses) {
@@ -70,7 +81,7 @@ function Invoke-InventorySyncOrchestrator {
     else {
         'RpaSyncActivity'
     }
-    Invoke-DurableActivity -FunctionName $activityName -InputObject @{
+    Invoke-DurableActivity -FunctionName $activityName -Input @{
         CorrelationId = $fallback
     }
 }

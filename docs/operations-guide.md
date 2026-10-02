@@ -12,6 +12,9 @@ resolve the service-principal secret from Key Vault.
 
 ## 1. Prerequisites
 
+The full preparation checklist (who does what, Key Vault, storage roles, network, and
+values to collect) is in [prerequisites.md](prerequisites.md). Summary:
+
 Provision the following before deploying the code:
 
 1. An Azure Function App on **Flex Consumption**, Functions runtime `~4`, with the
@@ -100,6 +103,7 @@ settings**. Examples are illustrative.
 | `FUNCTIONS_EXTENSION_VERSION` | Yes | Selects Functions runtime v4. | `~4` |
 | `FUNCTIONS_WORKER_RUNTIME` | Yes | Selects the PowerShell worker. | `powershell` |
 | `FUNCTIONS_WORKER_RUNTIME_VERSION` | Yes | Pins the worker to the implemented and supported runtime. | `7.6` |
+| `ExternalDurablePowerShellSDK` | Yes | Makes the worker use the standalone Durable SDK bundled in `src/Modules` instead of the built-in one. Without it, the orchestrations do not run. | `true` |
 | `APPLICATIONINSIGHTS_CONNECTION_STRING` | Yes | Sends host telemetry and the structured records emitted by the sync to Application Insights. The configuration loader also requires a nonblank value. Instrumentation-key-only settings are not used. | `InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://westeurope-5.in.applicationinsights.azure.com/` |
 | `INVENTORY_TENANT_ID` | Yes | Entra tenant used for all client-credential token requests. | `11111111-1111-1111-1111-111111111111` |
 | `INVENTORY_CLIENT_ID` | Yes | Client ID of the service principal registered as a Dataverse application user. | `22222222-2222-2222-2222-222222222222` |
@@ -127,9 +131,9 @@ settings:
 
 | File | Setting | Implemented value and purpose |
 |---|---|---|
-| `src/requirements.psd1` | `AzureFunctions.PowerShell.Durable.SDK` | `2.*`; managed PowerShell dependency that provides the Durable cmdlets used by both timers and orchestrators. Do not add a similarly named app setting. |
+| `src/Modules/AzureFunctions.PowerShell.Durable.SDK/2.4.0` | Bundled standalone Durable SDK | Provides the Durable cmdlets used by both timers and orchestrators. It is bundled with the code because Flex Consumption does not support managed dependencies (`requirements.psd1`). To upgrade, run `Save-Module AzureFunctions.PowerShell.Durable.SDK -RequiredVersion <version> -Path .\src\Modules` and update the version in `profile.ps1`. |
+| `src/profile.ps1` | `Import-Module AzureFunctions.PowerShell.Durable.SDK -RequiredVersion 2.4.0` | Loads the SDK on every cold start, as Microsoft requires for the standalone SDK, then loads `InventorySync`. |
 | `src/host.json` | `extensionBundle.version` | `[4.*, 5.0.0)`; supplies the v4 bindings, including Durable and timer bindings. |
-| `src/host.json` | `managedDependency.enabled` | `true`; permits Functions to restore `requirements.psd1`. |
 | `src/host.json` | Application Insights sampling | Enabled, with `Request` excluded from sampling and live-metrics filters enabled. |
 | `src/host.json` | Log levels | `Information` for default, `Host.Results`, and `Function`. |
 
@@ -155,8 +159,8 @@ func azure functionapp publish contoso-inventory-sync
 ```
 
 Core Tools uses the deployment mechanism supported by the Flex Consumption app. Do not
-publish the repository root: `host.json`, `requirements.psd1`, `profile.ps1`, the
-function folders, and `Modules` must be at the deployment package root.
+publish the repository root: `host.json`, `profile.ps1`, the function folders, and
+`Modules` (including the bundled Durable SDK) must be at the deployment package root.
 
 After deployment:
 
