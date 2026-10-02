@@ -58,6 +58,20 @@ function Get-InventorySyncConfiguration {
     else {
         @()
     }
+    $configuration.MaxCreatesPerRun = 1000
+    if (
+        $Settings.Contains('INVENTORY_MAX_CREATES_PER_RUN') -and
+        -not [string]::IsNullOrWhiteSpace([string] $Settings['INVENTORY_MAX_CREATES_PER_RUN'])
+    ) {
+        $configuredCap = 0
+        if (
+            -not [int]::TryParse([string] $Settings['INVENTORY_MAX_CREATES_PER_RUN'], [ref] $configuredCap) -or
+            $configuredCap -lt 0
+        ) {
+            throw 'INVENTORY_MAX_CREATES_PER_RUN must be a non-negative integer.'
+        }
+        $configuration.MaxCreatesPerRun = $configuredCap
+    }
 
     [pscustomobject] $configuration
 }
@@ -381,6 +395,7 @@ PowerPlatformResources
 | where tostring(properties.createdIn) == "$createdInLiteral"
 | project agentId = tostring(name),
           title = tostring(properties.displayName),
+          description = tostring(properties.description),
           environmentId = tostring(properties.environmentId),
           ownerId = tostring(properties.ownerId),
           createdAt = todatetime(properties.createdAt),
@@ -419,6 +434,184 @@ function New-InventoryComponentId {
     [array]::Reverse($guidBytes, 6, 2)
 
     ([guid]::new($guidBytes)).ToString()
+}
+
+function Test-InventoryTechnicalValueEqual {
+    param(
+        [Parameter(Mandatory)] [string] $FieldName,
+        [AllowNull()] $ExistingValue,
+        [AllowNull()] $SourceValue
+    )
+
+    if ($FieldName -in @('palp_urspruenglicherstelltam', 'palp_urspruenglichgeaendertam')) {
+        $existingTimestamp = [datetimeoffset]::MinValue
+        $sourceTimestamp = [datetimeoffset]::MinValue
+        if (
+            [datetimeoffset]::TryParse([string] $ExistingValue, [ref] $existingTimestamp) -and
+            [datetimeoffset]::TryParse([string] $SourceValue, [ref] $sourceTimestamp)
+        ) {
+            return $existingTimestamp.UtcTicks -eq $sourceTimestamp.UtcTicks
+        }
+    }
+    if ($FieldName -eq 'palp_besitzerobjectid') {
+        return [string] $ExistingValue -ieq [string] $SourceValue
+    }
+
+    [string] $ExistingValue -ceq [string] $SourceValue
+}
+
+function New-InventoryComponentReconciliationPlan {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $SourceComponents,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $Environments,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $ExistingComponents,
+        [Parameter(Mandatory)] [ValidateRange(0, [int]::MaxValue)] [int] $ComponentType,
+        [Parameter()] [ValidateRange(0, [int]::MaxValue)] [int] $CreationCap = [int]::MaxValue,
+        [Parameter()] [datetimeoffset] $Now = [datetimeoffset]::UtcNow
+    )
+
+    $existingById = @{}
+    foreach ($existing in $ExistingComponents) {
+        $typeProperty = $existing.PSObject.Properties['palp_typ']
+        if ($null -ne $typeProperty -and [int] $typeProperty.Value -ne $ComponentType) {
+            continue
+        }
+        $idProperty = $existing.PSObject.Properties['palp_id']
+        if ($null -ne $idProperty -and -not [string]::IsNullOrWhiteSpace([string] $idProperty.Value)) {
+            $existingById[[string] $idProperty.Value] = $existing
+        }
+    }
+    $knownEnvironmentIds = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+    foreach ($environment in $Environments) {
+        $environmentIdProperty = $environment.PSObject.Properties['palp_id']
+        if (
+            $null -ne $environmentIdProperty -and
+            -not [string]::IsNullOrWhiteSpace([string] $environmentIdProperty.Value)
+        ) {
+            $null = $knownEnvironmentIds.Add(([string] $environmentIdProperty.Value).Trim())
+        }
+    }
+
+    $writes = [System.Collections.Generic.List[object]]::new()
+    $logs = [System.Collections.Generic.List[object]]::new()
+    $created = 0
+    $updated = 0
+    $unchanged = 0
+    $skipped = 0
+    foreach ($source in $SourceComponents) {
+        $environmentId = ([string] $source.EnvironmentId).Trim()
+        $componentId = New-InventoryComponentId -EnvironmentId $environmentId `
+            -ComponentType $ComponentType -SourceId ([string] $source.SourceId)
+        $escapedEnvironmentId = $environmentId.Replace("'", "''")
+        if ($existingById.ContainsKey($componentId)) {
+            $existing = $existingById[$componentId]
+            $payload = [ordered] @{}
+            $fieldMappings = [ordered] @{
+                palp_titel                    = [string] $source.Title
+                palp_besitzerobjectid         = [string] $source.OwnerObjectId
+                palp_beschreibung             = $source.Description
+                palp_urspruenglicherstelltam  = [string] $source.SourceCreatedAt
+                palp_urspruenglichgeaendertam = [string] $source.SourceModifiedAt
+            }
+            foreach ($mapping in $fieldMappings.GetEnumerator()) {
+                $existingProperty = $existing.PSObject.Properties[$mapping.Key]
+                $existingValue = if ($null -ne $existingProperty) { $existingProperty.Value } else { $null }
+                if (-not (Test-InventoryTechnicalValueEqual -FieldName $mapping.Key `
+                            -ExistingValue $existingValue -SourceValue $mapping.Value)) {
+                    $payload[$mapping.Key] = $mapping.Value
+                }
+            }
+
+            $existingEnvironmentId = $null
+            $environmentProperty = $existing.PSObject.Properties['palp_environment']
+            if ($null -ne $environmentProperty -and $null -ne $environmentProperty.Value) {
+                $environmentIdProperty = $environmentProperty.Value.PSObject.Properties['palp_id']
+                if ($null -ne $environmentIdProperty) {
+                    $existingEnvironmentId = [string] $environmentIdProperty.Value
+                }
+            }
+            if ($existingEnvironmentId -ine $environmentId) {
+                $payload['palp_environment@odata.bind'] =
+                    "/palp_environments(palp_id='$escapedEnvironmentId')"
+            }
+
+            if ($payload.Count -gt 0) {
+                $escapedComponentId = $componentId.Replace("'", "''")
+                $writes.Add([pscustomobject] @{
+                    Method      = 'PATCH'
+                    RelativeUri = "palp_komponentes(palp_id='$escapedComponentId')"
+                    Payload     = [pscustomobject] $payload
+                })
+                $updated++
+            }
+            else {
+                $unchanged++
+            }
+            continue
+        }
+
+        if (-not $knownEnvironmentIds.Contains($environmentId)) {
+            $logs.Add([pscustomobject] [ordered] @{
+                Severity      = 'Warning'
+                Category      = 'Skipped'
+                EnvironmentId = $environmentId
+                ComponentType = $ComponentType
+                ComponentId   = [string] $source.SourceId
+                Operation     = 'Create'
+                Message       = "Environment '$environmentId' is not present in palp_environment."
+            })
+            $skipped++
+            continue
+        }
+
+        if ($created -ge $CreationCap) {
+            $logs.Add([pscustomobject] [ordered] @{
+                Severity      = 'Warning'
+                Category      = 'Skipped'
+                EnvironmentId = $environmentId
+                ComponentType = $ComponentType
+                ComponentId   = [string] $source.SourceId
+                Operation     = 'Create'
+                Message       = "Component was not created because the creation cap of $CreationCap was reached."
+            })
+            $skipped++
+            continue
+        }
+
+        $writes.Add([pscustomobject] @{
+            Method      = 'POST'
+            RelativeUri = 'palp_komponentes'
+            Payload     = [pscustomobject] [ordered] @{
+                palp_id                       = $componentId
+                palp_typ                      = $ComponentType
+                palp_titel                    = [string] $source.Title
+                palp_besitzerobjectid         = [string] $source.OwnerObjectId
+                palp_beschreibung             = $source.Description
+                'palp_environment@odata.bind' = "/palp_environments(palp_id='$escapedEnvironmentId')"
+                palp_urspruenglicherstelltam  = [string] $source.SourceCreatedAt
+                palp_urspruenglichgeaendertam = [string] $source.SourceModifiedAt
+                palp_komponentenstatus        = 0
+                palp_status                   = 0
+                palp_nutzungsbereich          = 0
+                palp_letztestatusaenderung    = $Now.ToString('o')
+            }
+        })
+        $created++
+    }
+
+    [pscustomobject] @{
+        Writes = $writes.ToArray()
+        Logs   = $logs.ToArray()
+        Counts = [pscustomobject] @{
+            Created   = $created
+            Updated   = $updated
+            Skipped   = $skipped
+            Unchanged = $unchanged
+        }
+    }
 }
 
 function New-AgentComponentCreatePlan {
@@ -620,6 +813,90 @@ function Invoke-AgentCreateSync {
         Counts = [pscustomobject] @{
             Found     = $agents.Count
             Created   = $plan.Counts.Created
+            Skipped   = $plan.Counts.Skipped
+            Unchanged = $plan.Counts.Unchanged
+        }
+        Logs  = $plan.Logs
+        Batch = $batch
+    }
+}
+
+function Invoke-AgentSync {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [psobject] $Configuration,
+        [Parameter()] [string] $ResourceGraphAccessToken,
+        [Parameter()] [string] $DataverseAccessToken,
+        [Parameter()] [datetimeoffset] $Now = [datetimeoffset]::UtcNow,
+        [Parameter()] [string] $CorrelationId = ([guid]::NewGuid().ToString())
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ResourceGraphAccessToken)) {
+        $ResourceGraphAccessToken = Get-InventoryAccessToken `
+            -Resource 'https://management.azure.com' -Configuration $Configuration
+    }
+    if ([string]::IsNullOrWhiteSpace($DataverseAccessToken)) {
+        $DataverseAccessToken = Get-InventoryAccessToken `
+            -Resource $Configuration.TargetDataverseUrl -Configuration $Configuration
+    }
+
+    $agents = @(Get-AgentBuilderAgents -CreatedIn $Configuration.AgentCreatedIn `
+        -Subscriptions @($Configuration.AgentSubscriptions) -AccessToken $ResourceGraphAccessToken)
+    $sourceComponents = @(
+        foreach ($agent in $agents) {
+            $descriptionProperty = $agent.PSObject.Properties['description']
+            [pscustomobject] @{
+                SourceId         = [string] $agent.agentId
+                EnvironmentId    = [string] $agent.environmentId
+                Title            = [string] $agent.title
+                OwnerObjectId    = [string] $agent.ownerId
+                Description      = if ($null -ne $descriptionProperty) {
+                    $descriptionProperty.Value
+                }
+                else {
+                    $null
+                }
+                SourceCreatedAt  = [string] $agent.createdAt
+                SourceModifiedAt = [string] $agent.modifiedAt
+            }
+        }
+    )
+
+    $baseUrl = $Configuration.TargetDataverseUrl.TrimEnd('/')
+    $environments = @(Get-DataversePagedRecords `
+        -Uri "$baseUrl/api/data/v9.2/palp_environments?`$select=palp_id" `
+        -AccessToken $DataverseAccessToken)
+    $componentQuery = 'palp_komponentes?' +
+        '$select=palp_id,palp_typ,palp_titel,palp_besitzerobjectid,palp_beschreibung,' +
+        'palp_urspruenglicherstelltam,palp_urspruenglichgeaendertam' +
+        '&$expand=palp_environment($select=palp_id)&$filter=palp_typ%20eq%205'
+    $existingComponents = @(Get-DataversePagedRecords `
+        -Uri "$baseUrl/api/data/v9.2/$componentQuery" -AccessToken $DataverseAccessToken)
+    $capProperty = $Configuration.PSObject.Properties['MaxCreatesPerRun']
+    $creationCap = if ($null -ne $capProperty) { [int] $capProperty.Value } else { 1000 }
+    $plan = New-InventoryComponentReconciliationPlan `
+        -SourceComponents $sourceComponents -Environments $environments `
+        -ExistingComponents $existingComponents -ComponentType 5 `
+        -CreationCap $creationCap -Now $Now
+
+    foreach ($logEntry in $plan.Logs) {
+        Write-InventoryTrace -Level $logEntry.Severity -Message $logEntry.Message `
+            -CorrelationId $CorrelationId -Data @{
+                category      = $logEntry.Category
+                environmentId = $logEntry.EnvironmentId
+                componentType = $logEntry.ComponentType
+                componentId   = $logEntry.ComponentId
+                operation     = $logEntry.Operation
+            }
+    }
+
+    $batch = Write-DataverseBatch -Writes $plan.Writes -DataverseUrl $baseUrl `
+        -AccessToken $DataverseAccessToken
+    [pscustomobject] @{
+        Counts = [pscustomobject] @{
+            Found     = $agents.Count
+            Created   = $plan.Counts.Created
+            Updated   = $plan.Counts.Updated
             Skipped   = $plan.Counts.Skipped
             Unchanged = $plan.Counts.Unchanged
         }
