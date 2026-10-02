@@ -15,6 +15,7 @@ function Get-InventorySyncConfiguration {
         INVENTORY_CLIENT_ID                   = 'ClientId'
         INVENTORY_CLIENT_SECRET               = 'ClientSecret'
         INVENTORY_TARGET_DATAVERSE_URL        = 'TargetDataverseUrl'
+        INVENTORY_AGENT_CREATED_IN            = 'AgentCreatedIn'
         APPLICATIONINSIGHTS_CONNECTION_STRING = 'ApplicationInsightsConnectionString'
     }
 
@@ -35,6 +36,28 @@ function Get-InventorySyncConfiguration {
         $configuration[$entry.Value] = ([string] $Settings[$entry.Key]).Trim()
     }
     $configuration.TargetDataverseUrl = $configuration.TargetDataverseUrl.TrimEnd('/')
+    $configuration.AgentSchedule = if (
+        $Settings.Contains('INVENTORY_AGENT_SCHEDULE') -and
+        -not [string]::IsNullOrWhiteSpace([string] $Settings['INVENTORY_AGENT_SCHEDULE'])
+    ) {
+        ([string] $Settings['INVENTORY_AGENT_SCHEDULE']).Trim()
+    }
+    else {
+        '0 0 0 * * *'
+    }
+    $configuration.AgentSubscriptions = if (
+        $Settings.Contains('INVENTORY_AGENT_SUBSCRIPTIONS') -and
+        -not [string]::IsNullOrWhiteSpace([string] $Settings['INVENTORY_AGENT_SUBSCRIPTIONS'])
+    ) {
+        @(
+            ([string] $Settings['INVENTORY_AGENT_SUBSCRIPTIONS']).Split(',') |
+                ForEach-Object { $_.Trim() } |
+                Where-Object { -not [string]::IsNullOrWhiteSpace($_) }
+        )
+    }
+    else {
+        @()
+    }
 
     [pscustomobject] $configuration
 }
@@ -302,7 +325,7 @@ function Invoke-ResourceGraphPagedQuery {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [string] $Query,
-        [Parameter(Mandatory)] [string[]] $Subscriptions,
+        [Parameter()] [AllowEmptyCollection()] [string[]] $Subscriptions = @(),
         [Parameter(Mandatory)] [string] $AccessToken
     )
 
@@ -322,9 +345,11 @@ function Invoke-ResourceGraphPagedQuery {
             $options['$skipToken'] = $skipToken
         }
         $requestBody = [ordered]@{
-            subscriptions = $Subscriptions
-            query         = $Query
-            options       = [pscustomobject] $options
+            query   = $Query
+            options = [pscustomobject] $options
+        }
+        if ($Subscriptions.Count -gt 0) {
+            $requestBody['subscriptions'] = $Subscriptions
         }
 
         $response = Invoke-InventoryHttpRequest -Uri $uri -Method POST -Headers $headers -Body $requestBody
@@ -338,6 +363,269 @@ function Invoke-ResourceGraphPagedQuery {
             throw "Resource Graph returned a repeated `$skipToken: '$skipToken'."
         }
     } while (-not [string]::IsNullOrWhiteSpace($skipToken))
+}
+
+function Get-AgentBuilderAgents {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $CreatedIn,
+        [Parameter()] [AllowEmptyCollection()] [string[]] $Subscriptions = @(),
+        [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $AccessToken
+    )
+
+    $createdInLiteral = $CreatedIn.Replace('\', '\\').Replace('"', '\"')
+    $query = @"
+PowerPlatformResources
+| where type =~ "microsoft.copilotstudio/agents"
+| extend properties = parse_json(properties)
+| where tostring(properties.createdIn) == "$createdInLiteral"
+| project agentId = tostring(name),
+          title = tostring(properties.displayName),
+          environmentId = tostring(properties.environmentId),
+          ownerId = tostring(properties.ownerId),
+          createdAt = todatetime(properties.createdAt),
+          modifiedAt = todatetime(properties.lastModifiedAt)
+"@
+
+    Invoke-ResourceGraphPagedQuery -Query $query -Subscriptions $Subscriptions -AccessToken $AccessToken
+}
+
+function New-InventoryComponentId {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $EnvironmentId,
+        [Parameter(Mandatory)] [ValidateRange(0, [int]::MaxValue)] [int] $ComponentType,
+        [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $SourceId
+    )
+
+    $namespaceBytes = ([guid] '89d605f0-44cb-497c-a664-96c6c13d2bfc').ToByteArray()
+    [array]::Reverse($namespaceBytes, 0, 4)
+    [array]::Reverse($namespaceBytes, 4, 2)
+    [array]::Reverse($namespaceBytes, 6, 2)
+
+    $name = '{0}|{1}|{2}' -f $EnvironmentId.Trim().ToLowerInvariant(), $ComponentType,
+        $SourceId.Trim().ToLowerInvariant()
+    $nameBytes = [System.Text.Encoding]::UTF8.GetBytes($name)
+    $inputBytes = [byte[]]::new($namespaceBytes.Length + $nameBytes.Length)
+    [array]::Copy($namespaceBytes, 0, $inputBytes, 0, $namespaceBytes.Length)
+    [array]::Copy($nameBytes, 0, $inputBytes, $namespaceBytes.Length, $nameBytes.Length)
+
+    $hash = [System.Security.Cryptography.SHA1]::HashData($inputBytes)
+    $guidBytes = [byte[]] $hash[0..15]
+    $guidBytes[6] = [byte] (($guidBytes[6] -band 0x0f) -bor 0x50)
+    $guidBytes[8] = [byte] (($guidBytes[8] -band 0x3f) -bor 0x80)
+    [array]::Reverse($guidBytes, 0, 4)
+    [array]::Reverse($guidBytes, 4, 2)
+    [array]::Reverse($guidBytes, 6, 2)
+
+    ([guid]::new($guidBytes)).ToString()
+}
+
+function New-AgentComponentCreatePlan {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $Agents,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $Environments,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]] $ExistingComponentIds,
+        [Parameter()] [datetimeoffset] $Now = [datetimeoffset]::UtcNow
+    )
+
+    $knownEnvironmentIds = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+    foreach ($environment in $Environments) {
+        if (-not [string]::IsNullOrWhiteSpace([string] $environment.palp_id)) {
+            $null = $knownEnvironmentIds.Add(([string] $environment.palp_id).Trim())
+        }
+    }
+
+    $existingIds = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+    foreach ($existingId in $ExistingComponentIds) {
+        if (-not [string]::IsNullOrWhiteSpace($existingId)) {
+            $null = $existingIds.Add($existingId.Trim())
+        }
+    }
+
+    $writes = [System.Collections.Generic.List[object]]::new()
+    $logs = [System.Collections.Generic.List[object]]::new()
+    $created = 0
+    $skipped = 0
+    $unchanged = 0
+
+    foreach ($agent in $Agents) {
+        $environmentId = ([string] $agent.environmentId).Trim()
+        $sourceId = ([string] $agent.agentId).Trim()
+        $componentId = New-InventoryComponentId -EnvironmentId $environmentId `
+            -ComponentType 5 -SourceId $sourceId
+
+        if ($existingIds.Contains($componentId)) {
+            $unchanged++
+            continue
+        }
+
+        if (-not $knownEnvironmentIds.Contains($environmentId)) {
+            $logs.Add([pscustomobject] [ordered] @{
+                Severity      = 'Warning'
+                Category      = 'Skipped'
+                EnvironmentId = $environmentId
+                ComponentType = 5
+                ComponentId   = $sourceId
+                Operation     = 'Create'
+                Message       = "Environment '$environmentId' is not present in palp_environment."
+            })
+            $skipped++
+            continue
+        }
+
+        $escapedEnvironmentId = $environmentId.Replace("'", "''")
+        $payload = [ordered] @{
+            palp_id                       = $componentId
+            palp_typ                      = 5
+            palp_titel                    = [string] $agent.title
+            palp_besitzerobjectid         = [string] $agent.ownerId
+            'palp_environment@odata.bind' = "/palp_environments(palp_id='$escapedEnvironmentId')"
+            palp_urspruenglicherstelltam  = [string] $agent.createdAt
+            palp_urspruenglichgeaendertam = [string] $agent.modifiedAt
+            palp_komponentenstatus        = 0
+            palp_status                   = 0
+            palp_nutzungsbereich          = 0
+            palp_letztestatusaenderung    = $Now.ToString('o')
+        }
+        $writes.Add([pscustomobject] @{
+            Method      = 'POST'
+            RelativeUri = 'palp_komponentes'
+            Payload     = [pscustomobject] $payload
+        })
+        $created++
+    }
+
+    [pscustomobject] @{
+        Writes = $writes.ToArray()
+        Logs   = $logs.ToArray()
+        Counts = [pscustomobject] @{
+            Created   = $created
+            Skipped   = $skipped
+            Unchanged = $unchanged
+        }
+    }
+}
+
+function Write-DataverseBatch {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $Writes,
+        [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $DataverseUrl,
+        [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $AccessToken,
+        [Parameter()] [ValidateRange(1, 1000)] [int] $BatchSize = 1000
+    )
+
+    $baseUrl = $DataverseUrl.TrimEnd('/')
+    $batchCount = 0
+    $operationCount = 0
+    for ($offset = 0; $offset -lt $Writes.Count; $offset += $BatchSize) {
+        $lastIndex = [Math]::Min($offset + $BatchSize - 1, $Writes.Count - 1)
+        $batchWrites = @($Writes[$offset..$lastIndex])
+        $batchBoundary = 'batch_{0}' -f ([guid]::NewGuid().ToString('N'))
+        $changeSetBoundary = 'changeset_{0}' -f ([guid]::NewGuid().ToString('N'))
+        $lines = [System.Collections.Generic.List[string]]::new()
+        $lines.Add("--$batchBoundary")
+        $lines.Add("Content-Type: multipart/mixed;boundary=$changeSetBoundary")
+        $lines.Add('')
+
+        $contentId = 0
+        foreach ($write in $batchWrites) {
+            $contentId++
+            $lines.Add("--$changeSetBoundary")
+            $lines.Add('Content-Type: application/http')
+            $lines.Add('Content-Transfer-Encoding: binary')
+            $lines.Add("Content-ID: $contentId")
+            $lines.Add('')
+            $lines.Add("$($write.Method) $($write.RelativeUri) HTTP/1.1")
+            $lines.Add('Content-Type: application/json;type=entry')
+            $lines.Add('Accept: application/json')
+            $lines.Add('')
+            $lines.Add(($write.Payload | ConvertTo-Json -Depth 100 -Compress))
+            $lines.Add('')
+        }
+        $lines.Add("--$changeSetBoundary--")
+        $lines.Add("--$batchBoundary--")
+        $lines.Add('')
+
+        $headers = @{
+            Authorization = "Bearer $AccessToken"
+            Accept        = 'application/json'
+        }
+        $contentType = "multipart/mixed;boundary=$batchBoundary"
+        $body = $lines -join "`r`n"
+        Invoke-InventoryHttpRequest -Uri "$baseUrl/api/data/v9.2/`$batch" -Method POST `
+            -Headers $headers -ContentType $contentType -Body $body | Out-Null
+        $batchCount++
+        $operationCount += $batchWrites.Count
+    }
+
+    [pscustomobject] @{
+        Batches    = $batchCount
+        Operations = $operationCount
+    }
+}
+
+function Invoke-AgentCreateSync {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [psobject] $Configuration,
+        [Parameter()] [string] $ResourceGraphAccessToken,
+        [Parameter()] [string] $DataverseAccessToken,
+        [Parameter()] [datetimeoffset] $Now = [datetimeoffset]::UtcNow,
+        [Parameter()] [string] $CorrelationId = ([guid]::NewGuid().ToString())
+    )
+
+    if ([string]::IsNullOrWhiteSpace($ResourceGraphAccessToken)) {
+        $ResourceGraphAccessToken = Get-InventoryAccessToken `
+            -Resource 'https://management.azure.com' -Configuration $Configuration
+    }
+    if ([string]::IsNullOrWhiteSpace($DataverseAccessToken)) {
+        $DataverseAccessToken = Get-InventoryAccessToken `
+            -Resource $Configuration.TargetDataverseUrl -Configuration $Configuration
+    }
+
+    $agents = @(Get-AgentBuilderAgents -CreatedIn $Configuration.AgentCreatedIn `
+        -Subscriptions @($Configuration.AgentSubscriptions) -AccessToken $ResourceGraphAccessToken)
+    $baseUrl = $Configuration.TargetDataverseUrl.TrimEnd('/')
+    $environments = @(Get-DataversePagedRecords `
+        -Uri "$baseUrl/api/data/v9.2/palp_environments?`$select=palp_id" `
+        -AccessToken $DataverseAccessToken)
+    $existingComponents = @(Get-DataversePagedRecords `
+        -Uri "$baseUrl/api/data/v9.2/palp_komponentes?`$select=palp_id&`$filter=palp_typ%20eq%205" `
+        -AccessToken $DataverseAccessToken)
+    $existingIds = @($existingComponents | ForEach-Object { [string] $_.palp_id })
+    $plan = New-AgentComponentCreatePlan -Agents $agents -Environments $environments `
+        -ExistingComponentIds $existingIds -Now $Now
+
+    foreach ($logEntry in $plan.Logs) {
+        Write-InventoryTrace -Level $logEntry.Severity -Message $logEntry.Message `
+            -CorrelationId $CorrelationId -Data @{
+                category      = $logEntry.Category
+                environmentId = $logEntry.EnvironmentId
+                componentType = $logEntry.ComponentType
+                componentId   = $logEntry.ComponentId
+                operation     = $logEntry.Operation
+            }
+    }
+
+    $batch = Write-DataverseBatch -Writes $plan.Writes -DataverseUrl $baseUrl `
+        -AccessToken $DataverseAccessToken
+    [pscustomobject] @{
+        Counts = [pscustomobject] @{
+            Found     = $agents.Count
+            Created   = $plan.Counts.Created
+            Skipped   = $plan.Counts.Skipped
+            Unchanged = $plan.Counts.Unchanged
+        }
+        Logs  = $plan.Logs
+        Batch = $batch
+    }
 }
 
 function Write-InventoryTrace {

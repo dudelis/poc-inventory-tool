@@ -11,6 +11,11 @@
         'Invoke-InventoryHttpRequest'
         'Get-DataversePagedRecords'
         'Invoke-ResourceGraphPagedQuery'
+        'Get-AgentBuilderAgents'
+        'New-InventoryComponentId'
+        'New-AgentComponentCreatePlan'
+        'Write-DataverseBatch'
+        'Invoke-AgentCreateSync'
         'Write-InventoryTrace'
     )
     CmdletsToExport   = @()
