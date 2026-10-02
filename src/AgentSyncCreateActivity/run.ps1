@@ -1,4 +1,4 @@
 param($Input)
 
 $configuration = Get-InventorySyncConfiguration
-Invoke-AgentCreateSync -Configuration $configuration -CorrelationId $Input.CorrelationId
+Invoke-AgentSync -Configuration $configuration -CorrelationId $Input.CorrelationId
