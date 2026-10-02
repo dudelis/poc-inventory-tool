@@ -111,7 +111,7 @@ Describe 'Agent Builder sync' {
                                 palp_environment = [pscustomobject] @{ palp_id = 'environment-1' }
                                 palp_urspruenglicherstelltam = '2026-09-01T08:00:00Z'
                                 palp_urspruenglichgeaendertam = '2026-09-02T09:00:00Z'
-                                palp_komponentenstatus = 7; palp_status = 1
+                                palp_komponentenstatus = 3; palp_status = 0
                             },
                             [pscustomobject] @{
                                 palp_id = $unchangedId; palp_titel = 'Unchanged title'

@@ -54,8 +54,8 @@ Describe 'Shared component reconciliation' {
             palp_environment              = [pscustomobject] @{ palp_id = 'old-environment' }
             palp_urspruenglicherstelltam  = '2026-08-01T08:00:00Z'
             palp_urspruenglichgeaendertam = '2026-08-02T09:00:00Z'
-            palp_komponentenstatus        = 7
-            palp_status                   = 1
+            palp_komponentenstatus        = 3
+            palp_status                   = 0
             palp_nutzungsbereich          = 2
             palp_letztestatusaenderung    = '2026-08-03T09:00:00Z'
             palp_regelverstoss            = $true

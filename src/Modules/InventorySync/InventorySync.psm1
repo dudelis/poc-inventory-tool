@@ -391,6 +391,14 @@ function Invoke-ResourceGraphPagedQuery {
 
         $skipTokenProperty = $response.Body.PSObject.Properties['$skipToken']
         $skipToken = if ($null -ne $skipTokenProperty) { [string] $skipTokenProperty.Value } else { $null }
+        $truncatedProperty = $response.Body.PSObject.Properties['resultTruncated']
+        if (
+            $null -ne $truncatedProperty -and
+            [string] $truncatedProperty.Value -ieq 'true' -and
+            [string]::IsNullOrWhiteSpace($skipToken)
+        ) {
+            throw 'Resource Graph returned an incomplete result without a continuation token.'
+        }
         if (-not [string]::IsNullOrWhiteSpace($skipToken) -and -not $seenTokens.Add($skipToken)) {
             throw "Resource Graph returned a repeated `$skipToken: '$skipToken'."
         }
@@ -517,6 +525,7 @@ function New-InventoryComponentReconciliationPlan {
     $logs = [System.Collections.Generic.List[object]]::new()
     $created = 0
     $updated = 0
+    $restored = 0
     $unchanged = 0
     $skipped = 0
     foreach ($source in $SourceComponents) {
@@ -527,6 +536,9 @@ function New-InventoryComponentReconciliationPlan {
         if ($existingById.ContainsKey($componentId)) {
             $existing = $existingById[$componentId]
             $payload = [ordered] @{}
+            $componentStatusProperty = $existing.PSObject.Properties['palp_komponentenstatus']
+            $isDeleted = $null -ne $componentStatusProperty -and
+                [int] $componentStatusProperty.Value -eq 7
             $fieldMappings = [ordered] @{
                 palp_titel                    = [string] $source.Title
                 palp_besitzerobjectid         = [string] $source.OwnerObjectId
@@ -555,6 +567,11 @@ function New-InventoryComponentReconciliationPlan {
                 $payload['palp_environment@odata.bind'] =
                     "/palp_environments(palp_id='$escapedEnvironmentId')"
             }
+            if ($isDeleted) {
+                $payload.palp_komponentenstatus = 0
+                $payload.palp_status = 0
+                $payload.palp_letztestatusaenderung = $Now.ToString('o')
+            }
 
             if ($payload.Count -gt 0) {
                 $escapedComponentId = $componentId.Replace("'", "''")
@@ -565,9 +582,23 @@ function New-InventoryComponentReconciliationPlan {
                     EnvironmentId = $environmentId
                     ComponentType = $ComponentType
                     ComponentId   = [string] $source.SourceId
-                    Operation     = 'Update'
+                    Operation     = if ($isDeleted) { 'Restore' } else { 'Update' }
                 })
-                $updated++
+                if ($isDeleted) {
+                    $restored++
+                    $logs.Add([pscustomobject] [ordered] @{
+                        Severity      = 'Warning'
+                        Category      = 'Restored'
+                        EnvironmentId = $environmentId
+                        ComponentType = $ComponentType
+                        ComponentId   = [string] $source.SourceId
+                        Operation     = 'Restore'
+                        Message       = 'A previously deleted component was restored to Neu and Aktiv.'
+                    })
+                }
+                else {
+                    $updated++
+                }
             }
             else {
                 $unchanged++
@@ -634,6 +665,7 @@ function New-InventoryComponentReconciliationPlan {
         Counts = [pscustomobject] @{
             Created   = $created
             Updated   = $updated
+            Restored  = $restored
             Skipped   = $skipped
             Unchanged = $unchanged
         }
@@ -1319,6 +1351,108 @@ function Invoke-AgentCreateSync {
     }
 }
 
+function Get-InventoryDeletionCandidates {
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $ExistingComponents,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]] $CollectedComponentIds,
+        [Parameter(Mandatory)] [int] $ComponentType
+    )
+
+    $collected = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+    foreach ($componentId in $CollectedComponentIds) {
+        if (-not [string]::IsNullOrWhiteSpace($componentId)) {
+            $null = $collected.Add($componentId)
+        }
+    }
+
+    foreach ($existing in $ExistingComponents) {
+        $typeProperty = $existing.PSObject.Properties['palp_typ']
+        if ($null -ne $typeProperty -and [int] $typeProperty.Value -ne $ComponentType) {
+            continue
+        }
+        $statusProperty = $existing.PSObject.Properties['palp_status']
+        if ($null -ne $statusProperty -and [int] $statusProperty.Value -ne 0) {
+            continue
+        }
+        $componentStatusProperty = $existing.PSObject.Properties['palp_komponentenstatus']
+        if ($null -ne $componentStatusProperty -and [int] $componentStatusProperty.Value -eq 7) {
+            continue
+        }
+        $componentId = [string] $existing.palp_id
+        if (-not [string]::IsNullOrWhiteSpace($componentId) -and -not $collected.Contains($componentId)) {
+            $existing
+        }
+    }
+}
+
+function Get-MissingAgentCandidateIds {
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $Candidates,
+        [Parameter()] [AllowEmptyCollection()] [string[]] $Subscriptions = @(),
+        [Parameter(Mandatory)] [string] $AccessToken
+    )
+
+    foreach ($candidate in $Candidates) {
+        $candidateId = [string] $candidate.palp_id
+        $candidateLiteral = $candidateId.Replace('\', '\\').Replace('"', '\"')
+        $query = @"
+PowerPlatformResources
+| where type =~ "microsoft.copilotstudio/agents"
+| where tostring(name) =~ "$candidateLiteral" or tostring(id) =~ "$candidateLiteral"
+| project agentId = tostring(name)
+"@
+        $matches = @(Invoke-ResourceGraphPagedQuery -Query $query `
+            -Subscriptions $Subscriptions -AccessToken $AccessToken)
+        if ($matches.Count -eq 0) {
+            $candidateId
+        }
+    }
+}
+
+function New-InventoryDeletionWrites {
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $Candidates,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]] $ConfirmedMissingIds,
+        [Parameter(Mandatory)] [int] $ComponentType,
+        [Parameter(Mandatory)] [datetimeoffset] $Now
+    )
+
+    $confirmedMissing = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+    foreach ($componentId in $ConfirmedMissingIds) {
+        $null = $confirmedMissing.Add($componentId)
+    }
+
+    foreach ($candidate in $Candidates) {
+        $componentId = [string] $candidate.palp_id
+        if (-not $confirmedMissing.Contains($componentId)) {
+            continue
+        }
+        $environmentId = ''
+        $environmentProperty = $candidate.PSObject.Properties['palp_environment']
+        if ($null -ne $environmentProperty -and $null -ne $environmentProperty.Value) {
+            $environmentId = [string] $environmentProperty.Value.palp_id
+        }
+        $escapedComponentId = $componentId.Replace("'", "''")
+        [pscustomobject] @{
+            Method        = 'PATCH'
+            RelativeUri   = "palp_komponentes(palp_id='$escapedComponentId')"
+            Payload       = [pscustomobject] [ordered] @{
+                palp_komponentenstatus     = 7
+                palp_status                = 1
+                palp_letztestatusaenderung = $Now.ToString('o')
+            }
+            EnvironmentId = $environmentId
+            ComponentType = $ComponentType
+            ComponentId   = $componentId
+            Operation     = 'Delete'
+        }
+    }
+}
+
 function Invoke-AgentSyncCore {
     [CmdletBinding()]
     param(
@@ -1367,7 +1501,8 @@ function Invoke-AgentSyncCore {
         -AccessToken $DataverseAccessToken)
     $componentQuery = 'palp_komponentes?' +
         '$select=palp_id,palp_typ,palp_titel,palp_besitzerobjectid,palp_beschreibung,' +
-        'palp_urspruenglicherstelltam,palp_urspruenglichgeaendertam' +
+        'palp_urspruenglicherstelltam,palp_urspruenglichgeaendertam,' +
+        'palp_komponentenstatus,palp_status' +
         '&$expand=palp_environment($select=palp_id)&$filter=palp_typ%20eq%205'
     $existingComponents = @(Get-DataversePagedRecords `
         -Uri "$baseUrl/api/data/v9.2/$componentQuery" -AccessToken $DataverseAccessToken)
@@ -1391,34 +1526,115 @@ function Invoke-AgentSyncCore {
         }
     }
 
-    $batch = Write-DataverseBatch -Writes $plan.Writes -DataverseUrl $baseUrl `
+    $writeBatch = Write-DataverseBatch -Writes $plan.Writes -DataverseUrl $baseUrl `
         -AccessToken $DataverseAccessToken
-    $failedCreates = @($batch.Failures | Where-Object { $_.Operation -eq 'Create' }).Count
-    $failedUpdates = @($batch.Failures | Where-Object { $_.Operation -eq 'Update' }).Count
+    $failedCreates = @($writeBatch.Failures | Where-Object { $_.Operation -eq 'Create' }).Count
+    $failedUpdates = @($writeBatch.Failures | Where-Object { $_.Operation -eq 'Update' }).Count
+    $failedRestores = @($writeBatch.Failures | Where-Object { $_.Operation -eq 'Restore' }).Count
     $environmentIds = @(
-        $sourceComponents.EnvironmentId |
+        $sourceComponents |
+            ForEach-Object { [string] $_.EnvironmentId } |
             Where-Object { -not [string]::IsNullOrWhiteSpace([string] $_) } |
             Sort-Object -Unique
     )
     $failedEnvironmentIds = @(
-        @($plan.Logs) + @($batch.Failures) |
+        @($plan.Logs | Where-Object { $_.Category -ne 'Restored' }) + @($writeBatch.Failures) |
             ForEach-Object { ([string] $_.EnvironmentId).Trim() } |
             Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
             Sort-Object -Unique
     )
-    [pscustomobject] @{
-        Counts = [pscustomobject] @{
-            EnvironmentsTotal  = $environmentIds.Count
-            EnvironmentsFailed = $failedEnvironmentIds.Count
-            Found              = $agents.Count
-            Created            = [Math]::Max(0, $plan.Counts.Created - $failedCreates)
-            Updated            = [Math]::Max(0, $plan.Counts.Updated - $failedUpdates)
-            Skipped            = $plan.Counts.Skipped
-            Unchanged          = $plan.Counts.Unchanged
-            Errors             = $plan.Counts.Skipped + $batch.Failed
+    $logs = [System.Collections.Generic.List[object]]::new()
+    $failedRestoreIds = [System.Collections.Generic.HashSet[string]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase
+    )
+    foreach ($failure in $writeBatch.Failures) {
+        if ($failure.Operation -eq 'Restore') {
+            $null = $failedRestoreIds.Add([string] $failure.ComponentId)
         }
-        Logs  = $plan.Logs
-        Batch = $batch
+    }
+    foreach ($entry in $plan.Logs) {
+        if ($entry.Category -ne 'Restored' -or -not $failedRestoreIds.Contains([string] $entry.ComponentId)) {
+            $logs.Add($entry)
+        }
+    }
+    $counts = [pscustomobject] @{
+        EnvironmentsTotal  = $environmentIds.Count
+        EnvironmentsFailed = $failedEnvironmentIds.Count
+        Found              = $agents.Count
+        Created            = [Math]::Max(0, $plan.Counts.Created - $failedCreates)
+        Updated            = [Math]::Max(0, $plan.Counts.Updated - $failedUpdates)
+        MarkedDeleted      = 0
+        Restored           = [Math]::Max(0, $plan.Counts.Restored - $failedRestores)
+        Skipped            = $plan.Counts.Skipped
+        Unchanged          = $plan.Counts.Unchanged
+        Errors             = $plan.Counts.Skipped + $writeBatch.Failed
+    }
+    $deletionBatch = [pscustomobject] @{
+        Batches = 0; Operations = 0; Succeeded = 0; Failed = 0; Failures = @()
+    }
+    $phase = 'Write'
+    if ($counts.Errors -eq 0) {
+        $phase = 'DeletionCheck'
+        $collectedIds = @(
+            foreach ($source in $sourceComponents) {
+                New-InventoryComponentId -EnvironmentId ([string] $source.EnvironmentId) `
+                    -ComponentType 5 -SourceId ([string] $source.SourceId)
+            }
+        )
+        $candidates = @(Get-InventoryDeletionCandidates `
+            -ExistingComponents $existingComponents -CollectedComponentIds $collectedIds `
+            -ComponentType 5)
+        try {
+            $confirmedMissingIds = @(Get-MissingAgentCandidateIds `
+                -Candidates $candidates -Subscriptions @($Configuration.AgentSubscriptions) `
+                -AccessToken $ResourceGraphAccessToken)
+            $deletionWrites = @(New-InventoryDeletionWrites -Candidates $candidates `
+                -ConfirmedMissingIds $confirmedMissingIds -ComponentType 5 -Now $Now)
+            $deletionBatch = Write-DataverseBatch -Writes $deletionWrites `
+                -DataverseUrl $baseUrl -AccessToken $DataverseAccessToken
+            $counts.MarkedDeleted = $deletionBatch.Succeeded
+            $counts.Errors += $deletionBatch.Failed
+        }
+        catch {
+            $counts.Errors++
+            $errorDetails = Get-InventoryErrorDetails -Message $_.Exception.Message
+            $logs.Add([pscustomobject] [ordered] @{
+                Severity      = 'Error'
+                Category      = 'VerifyFailed'
+                EnvironmentId = ''
+                ComponentType = 5
+                ComponentId   = ''
+                Operation     = 'Delete'
+                HttpStatus    = $errorDetails.HttpStatus
+                ErrorCode     = $errorDetails.ErrorCode
+                Message       = $_.Exception.Message
+            })
+        }
+    }
+    else {
+        $logs.Add([pscustomobject] [ordered] @{
+            Severity      = 'Warning'
+            Category      = 'Skipped'
+            EnvironmentId = ''
+            ComponentType = 5
+            ComponentId   = ''
+            Operation     = 'Delete'
+            Message       = 'Deletion check was skipped because collection or write did not complete successfully.'
+        })
+    }
+
+    $allFailures = @($writeBatch.Failures) + @($deletionBatch.Failures)
+    [pscustomobject] @{
+        Counts = $counts
+        Logs   = $logs.ToArray()
+        Batch  = [pscustomobject] @{
+            Batches    = $writeBatch.Batches + $deletionBatch.Batches
+            Operations = $writeBatch.Operations + $deletionBatch.Operations
+            Succeeded  = $writeBatch.Succeeded + $deletionBatch.Succeeded
+            Failed     = $writeBatch.Failed + $deletionBatch.Failed
+            Failures   = $allFailures
+        }
+        Phase = $phase
     }
 }
 
@@ -1472,16 +1688,30 @@ function Invoke-AgentSync {
         $result = Invoke-AgentSyncCore -Configuration $Configuration `
             -ResourceGraphAccessToken $ResourceGraphAccessToken `
             -DataverseAccessToken $DataverseAccessToken -Now $Now `
-            -CorrelationId $CorrelationId -SuppressPlanTracing:$loggingConfigured
+            -CorrelationId $CorrelationId -SuppressPlanTracing
 
         foreach ($property in @(
                 'EnvironmentsTotal', 'EnvironmentsFailed', 'Found', 'Created',
-                'Updated', 'Unchanged', 'Errors', 'Skipped'
+                'Updated', 'Unchanged', 'MarkedDeleted', 'Restored', 'Errors', 'Skipped'
             )) {
             $counts.$property = [int] $result.Counts.$property
         }
 
         foreach ($logEntry in $result.Logs) {
+            $httpStatusProperty = $logEntry.PSObject.Properties['HttpStatus']
+            $errorCodeProperty = $logEntry.PSObject.Properties['ErrorCode']
+            $httpStatus = if ($null -ne $httpStatusProperty) {
+                [int] $httpStatusProperty.Value
+            }
+            else {
+                0
+            }
+            $errorCode = if ($null -ne $errorCodeProperty) {
+                [string] $errorCodeProperty.Value
+            }
+            else {
+                ''
+            }
             if ($loggingConfigured) {
                 Write-InventorySyncLog -DataverseUrl $Configuration.TargetDataverseUrl `
                     -AccessToken $DataverseAccessToken -TableName ([string] $syncLogTableProperty.Value) `
@@ -1490,7 +1720,20 @@ function Invoke-AgentSync {
                     -CorrelationId $CorrelationId -Severity $logEntry.Severity `
                     -Category $logEntry.Category -EnvironmentId $logEntry.EnvironmentId `
                     -ComponentType $logEntry.ComponentType -ComponentId $logEntry.ComponentId `
-                    -Operation $logEntry.Operation -Message $logEntry.Message | Out-Null
+                    -Operation $logEntry.Operation -HttpStatus $httpStatus `
+                    -ErrorCode $errorCode -Message $logEntry.Message | Out-Null
+            }
+            else {
+                Write-InventoryTrace -Level $logEntry.Severity -Message $logEntry.Message `
+                    -CorrelationId $CorrelationId -Data @{
+                        category      = $logEntry.Category
+                        environmentId = $logEntry.EnvironmentId
+                        componentType = $logEntry.ComponentType
+                        componentId   = $logEntry.ComponentId
+                        operation     = $logEntry.Operation
+                        httpStatus    = $httpStatus
+                        errorCode     = $errorCode
+                    }
             }
         }
 
@@ -1524,7 +1767,7 @@ function Invoke-AgentSync {
         if ($loggingConfigured -and $runHeader.Persisted) {
             Complete-InventorySyncRun -DataverseUrl $Configuration.TargetDataverseUrl `
                 -AccessToken $DataverseAccessToken -TableName ([string] $syncRunTableProperty.Value) `
-                -RecordId $runHeader.RecordId -RunId $CorrelationId -Phase Write `
+                -RecordId $runHeader.RecordId -RunId $CorrelationId -Phase $result.Phase `
                 -Status $status -Counts $counts | Out-Null
         }
         Write-InventoryTrace -Level Information -Message "Agent sync completed with status $status." `
