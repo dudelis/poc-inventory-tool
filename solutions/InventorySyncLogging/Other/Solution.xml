@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ImportExportXml version="9.2" SolutionPackageVersion="9.2" languagecode="1033"
+  generatedBy="InventorySync" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance">
+  <SolutionManifest>
+    <UniqueName>InventorySyncLogging</UniqueName>
+    <LocalizedNames>
+      <LocalizedName description="Inventory Sync Logging" languagecode="1033" />
+    </LocalizedNames>
+    <Descriptions>
+      <Description description="Shared run and problem logging for inventory syncs." languagecode="1033" />
+    </Descriptions>
+    <Version>1.0.0.0</Version>
+    <Managed>0</Managed>
+    <Publisher>
+      <UniqueName>InventorySync</UniqueName>
+      <LocalizedNames>
+        <LocalizedName description="Inventory Sync" languagecode="1033" />
+      </LocalizedNames>
+      <Descriptions>
+        <Description description="Inventory synchronization components." languagecode="1033" />
+      </Descriptions>
+      <EMailAddress xsi:nil="true" />
+      <SupportingWebsiteUrl xsi:nil="true" />
+      <CustomizationPrefix>invs</CustomizationPrefix>
+      <CustomizationOptionValuePrefix>10000</CustomizationOptionValuePrefix>
+      <Addresses />
+    </Publisher>
+    <RootComponents>
+      <RootComponent type="1" schemaName="invs_syncrun" behavior="0" />
+      <RootComponent type="1" schemaName="invs_synclog" behavior="0" />
+      <RootComponent type="10" schemaName="invs_syncrun_synclogs" behavior="0" />
+    </RootComponents>
+    <MissingDependencies />
+  </SolutionManifest>
+</ImportExportXml>

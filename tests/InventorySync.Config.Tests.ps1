@@ -51,6 +51,24 @@ Describe 'Inventory sync configuration' {
             Should -Be '0 30 1 * * *'
     }
 
+    It 'uses configurable Dataverse logging table names' {
+        $settings = @{
+            INVENTORY_TENANT_ID                   = 'tenant-id'
+            INVENTORY_CLIENT_ID                   = 'client-id'
+            INVENTORY_CLIENT_SECRET               = 'secret'
+            INVENTORY_TARGET_DATAVERSE_URL        = 'https://example.crm.dynamics.com'
+            INVENTORY_AGENT_CREATED_IN            = 'Agent Builder'
+            APPLICATIONINSIGHTS_CONNECTION_STRING = 'InstrumentationKey=test'
+            INVENTORY_SYNC_RUN_TABLE              = 'custom_runs'
+            INVENTORY_SYNC_LOG_TABLE              = 'custom_logs'
+        }
+
+        $configuration = Get-InventorySyncConfiguration -Settings $settings
+
+        $configuration.SyncRunTable | Should -Be 'custom_runs'
+        $configuration.SyncLogTable | Should -Be 'custom_logs'
+    }
+
     It 'reads the per-run creation cap from app settings' {
         $settings = @{
             INVENTORY_TENANT_ID                   = 'tenant-id'
