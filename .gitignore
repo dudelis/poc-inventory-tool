@@ -2,3 +2,4 @@
 customer-db/
 src/local.settings.json
 testResults.xml
+deploy/.local/

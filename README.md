@@ -4,6 +4,9 @@ PowerShell 7.6 Azure Functions project for synchronizing Power Platform inventor
 
 ## Documentation
 
+The [portable deployment package](deploy/README.md) currently supports offline
+input validation and planning. It does not provision Azure resources yet.
+
 Start with the [prerequisites](docs/prerequisites.md): Azure resources, Key Vault,
 Entra and Dataverse permissions, and the values to collect before deployment.
 
