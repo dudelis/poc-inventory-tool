@@ -75,7 +75,7 @@ function Invoke-AgentCreateSync {
         -AccessToken $ResourceGraphAccessToken)
     $baseUrl = $Configuration.TargetDataverseUrl.TrimEnd('/')
     $environments = @(Get-DataversePagedRecords `
-        -Uri "$baseUrl/api/data/v9.2/palp_environments?`$select=palp_id" `
+        -Uri "$baseUrl/api/data/v9.2/palp_environments?`$select=palp_adminguid,palp_environmentid" `
         -AccessToken $DataverseAccessToken)
     $existingComponents = @(Get-DataversePagedRecords `
         -Uri "$baseUrl/api/data/v9.2/palp_komponentes?`$select=palp_id&`$filter=palp_typ%20eq%205" `
@@ -114,7 +114,8 @@ function Invoke-AgentCreateSync {
             Sort-Object -Unique
     )
     $failedEnvironmentIds = @(
-        @($plan.Logs) + @($batch.Failures) |
+        @($plan.Logs | Where-Object { $_.Category -eq 'Skipped' -or $_.Severity -eq 'Error' }) +
+            @($batch.Failures) |
             ForEach-Object { ([string] $_.EnvironmentId).Trim() } |
             Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
             Sort-Object -Unique
@@ -218,13 +219,13 @@ function Invoke-AgentSyncCore {
 
     $baseUrl = $Configuration.TargetDataverseUrl.TrimEnd('/')
     $environments = @(Get-DataversePagedRecords `
-        -Uri "$baseUrl/api/data/v9.2/palp_environments?`$select=palp_id" `
+        -Uri "$baseUrl/api/data/v9.2/palp_environments?`$select=palp_adminguid,palp_environmentid" `
         -AccessToken $DataverseAccessToken)
     $componentQuery = 'palp_komponentes?' +
         '$select=palp_id,palp_typ,palp_titel,palp_besitzerobjectid,palp_beschreibung,' +
         'palp_urspruenglicherstelltam,palp_urspruenglichgeaendertam,' +
         'palp_komponentenstatus,palp_status' +
-        '&$expand=palp_environment($select=palp_id)&$filter=palp_typ%20eq%205'
+        '&$expand=palp_Environment($select=palp_adminguid,palp_environmentid)&$filter=palp_typ%20eq%205'
     $existingComponents = @(Get-DataversePagedRecords `
         -Uri "$baseUrl/api/data/v9.2/$componentQuery" -AccessToken $DataverseAccessToken)
     $capProperty = $Configuration.PSObject.Properties['MaxCreatesPerRun']
@@ -259,7 +260,8 @@ function Invoke-AgentSyncCore {
             Sort-Object -Unique
     )
     $failedEnvironmentIds = @(
-        @($plan.Logs | Where-Object { $_.Category -ne 'Restored' }) + @($writeBatch.Failures) |
+        @($plan.Logs | Where-Object { $_.Category -eq 'Skipped' -or $_.Severity -eq 'Error' }) +
+            @($writeBatch.Failures) |
             ForEach-Object { ([string] $_.EnvironmentId).Trim() } |
             Where-Object { -not [string]::IsNullOrWhiteSpace($_) } |
             Sort-Object -Unique

@@ -6,18 +6,18 @@ BeforeAll {
 Describe 'RPA environment selection' {
     It 'selects only active environments with a URL and logs every excluded environment' {
         $environments = @(
-            [pscustomobject] @{ palp_id = 'prod'; palp_name = 'Production'; palp_sku = 'Production'; statecode = 0; palp_dataverseurl = 'https://prod.crm.dynamics.com' }
-            [pscustomobject] @{ palp_id = 'default'; palp_name = 'Default'; palp_sku = 'Standard'; statecode = 0; palp_dataverseurl = 'https://default.crm.dynamics.com' }
-            [pscustomobject] @{ palp_id = 'teams'; palp_name = 'Teams'; palp_sku = 'Teams'; statecode = 0; palp_dataverseurl = 'https://teams.crm.dynamics.com' }
-            [pscustomobject] @{ palp_id = 'deleted'; palp_name = 'Deleted'; palp_sku = 'Production'; statecode = 1; palp_dataverseurl = 'https://deleted.crm.dynamics.com' }
-            [pscustomobject] @{ palp_id = 'removed'; palp_name = 'Removed'; palp_sku = 'Production'; statecode = 0; palp_removed = $true; palp_dataverseurl = 'https://removed.crm.dynamics.com' }
-            [pscustomobject] @{ palp_id = 'no-url'; palp_name = 'No URL'; palp_sku = 'Production'; statecode = 0; palp_dataverseurl = $null }
+            [pscustomobject] @{ palp_id = 'legacy-prod'; palp_adminguid = 'prod'; palp_environmentid = '00000000-0000-0000-0000-000000000004'; palp_name = 'Production'; palp_sku = 'Production'; statecode = 0; palp_dataverseurl = 'https://prod.crm.dynamics.com' }
+            [pscustomobject] @{ palp_id = 'legacy-default'; palp_adminguid = 'default'; palp_environmentid = '00000000-0000-0000-0000-000000000005'; palp_name = 'Default'; palp_sku = 'Standard'; statecode = 0; palp_dataverseurl = 'https://default.crm.dynamics.com' }
+            [pscustomobject] @{ palp_id = 'legacy-teams'; palp_adminguid = 'teams'; palp_environmentid = '00000000-0000-0000-0000-000000000006'; palp_name = 'Teams'; palp_sku = 'Teams'; statecode = 0; palp_dataverseurl = 'https://teams.crm.dynamics.com' }
+            [pscustomobject] @{ palp_id = 'legacy-deleted'; palp_adminguid = 'deleted'; palp_environmentid = '00000000-0000-0000-0000-000000000007'; palp_name = 'Deleted'; palp_sku = 'Production'; statecode = 1; palp_dataverseurl = 'https://deleted.crm.dynamics.com' }
+            [pscustomobject] @{ palp_id = 'legacy-removed'; palp_adminguid = 'removed'; palp_environmentid = '00000000-0000-0000-0000-000000000008'; palp_name = 'Removed'; palp_sku = 'Production'; statecode = 0; palp_removed = $true; palp_dataverseurl = 'https://removed.crm.dynamics.com' }
+            [pscustomobject] @{ palp_id = 'legacy-no-url'; palp_adminguid = 'no-url'; palp_environmentid = '00000000-0000-0000-0000-000000000009'; palp_name = 'No URL'; palp_sku = 'Production'; statecode = 0; palp_dataverseurl = $null }
         )
 
         $plan = Get-RpaEnvironmentPlan -Environments $environments `
             -UrlColumn 'palp_dataverseurl' -ExcludedSkus @('Standard', 'Teams')
 
-        $plan.Environments.palp_id | Should -Be @('prod')
+        $plan.Environments.palp_adminguid | Should -Be @('prod')
         $plan.Logs | Should -HaveCount 5
         ($plan.Logs | Where-Object EnvironmentId -eq 'no-url').Message |
             Should -Match 'Dataverse URL'
@@ -89,7 +89,7 @@ Describe 'Desktop flow collection' {
         }
 
         $result = Get-RpaDesktopFlows -Environment ([pscustomobject] @{
-            palp_id = 'environment-1'; palp_name = 'Production'
+            palp_id = 'legacy-environment-1'; palp_adminguid = 'environment-1'; palp_environmentid = '00000000-0000-0000-0000-000000000001'; palp_name = 'Production'
             DataverseUrl = 'https://source.crm.dynamics.com'
         }) -AccessToken 'source-token'
 
@@ -109,12 +109,12 @@ Describe 'RPA fan-out and reconciliation' {
             param($environment, $configuration)
             $started = [datetimeoffset]::UtcNow
             Start-Sleep -Milliseconds 150
-            if ($environment.palp_id -eq 'bad') {
+            if ($environment.palp_adminguid -eq 'bad') {
                 throw 'HTTP 403: full permission failure'
             }
             [pscustomobject] @{
                 Flows = @([pscustomobject] @{
-                    SourceId = "flow-$($environment.palp_id)"
+                    SourceId = "flow-$($environment.palp_adminguid)"
                     Started = $started
                     Completed = [datetimeoffset]::UtcNow
                 })
@@ -123,10 +123,10 @@ Describe 'RPA fan-out and reconciliation' {
         }
 
         $environments = @(
-            [pscustomobject] @{ palp_id = 'one'; palp_name = 'One'; DataverseUrl = 'https://one.example' }
-            [pscustomobject] @{ palp_id = 'two'; palp_name = 'Two'; DataverseUrl = 'https://two.example' }
-            [pscustomobject] @{ palp_id = 'three'; palp_name = 'Three'; DataverseUrl = 'https://three.example' }
-            [pscustomobject] @{ palp_id = 'bad'; palp_name = 'Bad'; DataverseUrl = 'https://bad.example' }
+            [pscustomobject] @{ palp_id = 'legacy-one'; palp_adminguid = 'one'; palp_environmentid = '00000000-0000-0000-0000-000000000010'; palp_name = 'One'; DataverseUrl = 'https://one.example' }
+            [pscustomobject] @{ palp_id = 'legacy-two'; palp_adminguid = 'two'; palp_environmentid = '00000000-0000-0000-0000-000000000011'; palp_name = 'Two'; DataverseUrl = 'https://two.example' }
+            [pscustomobject] @{ palp_id = 'legacy-three'; palp_adminguid = 'three'; palp_environmentid = '00000000-0000-0000-0000-000000000012'; palp_name = 'Three'; DataverseUrl = 'https://three.example' }
+            [pscustomobject] @{ palp_id = 'legacy-bad'; palp_adminguid = 'bad'; palp_environmentid = '00000000-0000-0000-0000-000000000013'; palp_name = 'Bad'; DataverseUrl = 'https://bad.example' }
         )
 
         $result = Invoke-RpaEnvironmentFanOut -Environments $environments `
@@ -157,8 +157,8 @@ Describe 'RPA fan-out and reconciliation' {
             $script:requests.Add([pscustomobject] @{ Uri = $uriText; Method = $Method; Body = $Body })
             if ($uriText -match '/palp_environments\?') {
                 return [pscustomobject] @{ Body = [pscustomobject] @{ value = @(
-                    [pscustomobject] @{ palp_id = 'good'; palp_name = 'Good'; palp_sku = 'Production'; statecode = 0; palp_dataverseurl = 'https://good.crm.dynamics.com' }
-                    [pscustomobject] @{ palp_id = 'bad'; palp_name = 'Bad'; palp_sku = 'Production'; statecode = 0; palp_dataverseurl = 'https://bad.crm.dynamics.com' }
+                    [pscustomobject] @{ palp_id = 'legacy-good'; palp_adminguid = 'good'; palp_environmentid = '00000000-0000-0000-0000-000000000014'; palp_name = 'Good'; palp_sku = 'Production'; statecode = 0; palp_dataverseurl = 'https://good.crm.dynamics.com' }
+                    [pscustomobject] @{ palp_id = 'legacy-bad'; palp_adminguid = 'bad'; palp_environmentid = '00000000-0000-0000-0000-000000000013'; palp_name = 'Bad'; palp_sku = 'Production'; statecode = 0; palp_dataverseurl = 'https://bad.crm.dynamics.com' }
                 ) }}
             }
             if ($uriText -match '/palp_komponentes\?') {
@@ -166,7 +166,7 @@ Describe 'RPA fan-out and reconciliation' {
                     [pscustomobject] @{
                         palp_id = $existingId; palp_typ = 4; palp_titel = 'Old'
                         palp_besitzerobjectid = 'entra-owner'; palp_beschreibung = 'Description'
-                        palp_environment = [pscustomobject] @{ palp_id = 'good' }
+                        palp_environment = [pscustomobject] @{ palp_id = 'legacy-good'; palp_adminguid = 'good'; palp_environmentid = '00000000-0000-0000-0000-000000000014' }
                         palp_urspruenglicherstelltam = '2026-09-01T08:00:00Z'
                         palp_urspruenglichgeaendertam = '2026-09-02T09:00:00Z'
                     }
@@ -179,7 +179,7 @@ Describe 'RPA fan-out and reconciliation' {
         }
         $collector = {
             param($environment, $configuration)
-            if ($environment.palp_id -eq 'bad') { throw 'HTTP 504: source timed out after retries' }
+            if ($environment.palp_adminguid -eq 'bad') { throw 'HTTP 504: source timed out after retries' }
             [pscustomobject] @{
                 Flows = @(
                     [pscustomobject] @{
@@ -232,7 +232,7 @@ Describe 'RPA fan-out and reconciliation' {
             if ($uriText -match '/palp_environments\?') {
                 return [pscustomobject] @{ Body = [pscustomobject] @{ value = @(
                     [pscustomobject] @{
-                        palp_id = 'bad'; palp_name = 'Bad'; palp_sku = 'Production'
+                        palp_id = 'legacy-bad'; palp_adminguid = 'bad'; palp_environmentid = '00000000-0000-0000-0000-000000000013'; palp_name = 'Bad'; palp_sku = 'Production'
                         statecode = 0; palp_dataverseurl = 'https://bad.crm.dynamics.com'
                     }
                 ) }}
@@ -305,15 +305,15 @@ Describe 'RPA deletion check' {
             if ($uriText -match '/palp_environments\?') {
                 return [pscustomobject] @{ Body = [pscustomobject] @{ value = @(
                     [pscustomobject] @{
-                        palp_id = 'good'; palp_name = 'Good'; palp_sku = 'Production'
+                        palp_id = 'legacy-good'; palp_adminguid = 'good'; palp_environmentid = '00000000-0000-0000-0000-000000000014'; palp_name = 'Good'; palp_sku = 'Production'
                         statecode = 0; palp_dataverseurl = 'https://good.crm.dynamics.com'
                     },
                     [pscustomobject] @{
-                        palp_id = 'bad'; palp_name = 'Bad'; palp_sku = 'Production'
+                        palp_id = 'legacy-bad'; palp_adminguid = 'bad'; palp_environmentid = '00000000-0000-0000-0000-000000000013'; palp_name = 'Bad'; palp_sku = 'Production'
                         statecode = 0; palp_dataverseurl = 'https://bad.crm.dynamics.com'
                     },
                     [pscustomobject] @{
-                        palp_id = 'skipped'; palp_name = 'Skipped'; palp_sku = 'Standard'
+                        palp_id = 'legacy-skipped'; palp_adminguid = 'skipped'; palp_environmentid = '00000000-0000-0000-0000-000000000015'; palp_name = 'Skipped'; palp_sku = 'Standard'
                         statecode = 0; palp_dataverseurl = 'https://skipped.crm.dynamics.com'
                     }
                 ) } }
@@ -322,22 +322,22 @@ Describe 'RPA deletion check' {
                 return [pscustomobject] @{ Body = [pscustomobject] @{ value = @(
                     [pscustomobject] @{
                         palp_id = $missingId; palp_typ = 4
-                        palp_environment = [pscustomobject] @{ palp_id = 'good' }
+                        palp_environment = [pscustomobject] @{ palp_id = 'legacy-good'; palp_adminguid = 'good'; palp_environmentid = '00000000-0000-0000-0000-000000000014' }
                         palp_komponentenstatus = 0; palp_status = 0
                     },
                     [pscustomobject] @{
                         palp_id = $existingId; palp_typ = 4
-                        palp_environment = [pscustomobject] @{ palp_id = 'good' }
+                        palp_environment = [pscustomobject] @{ palp_id = 'legacy-good'; palp_adminguid = 'good'; palp_environmentid = '00000000-0000-0000-0000-000000000014' }
                         palp_komponentenstatus = 0; palp_status = 0
                     },
                     [pscustomobject] @{
                         palp_id = $failedEnvironmentId; palp_typ = 4
-                        palp_environment = [pscustomobject] @{ palp_id = 'bad' }
+                        palp_environment = [pscustomobject] @{ palp_id = 'legacy-bad'; palp_adminguid = 'bad'; palp_environmentid = '00000000-0000-0000-0000-000000000013' }
                         palp_komponentenstatus = 0; palp_status = 0
                     },
                     [pscustomobject] @{
                         palp_id = $skippedEnvironmentId; palp_typ = 4
-                        palp_environment = [pscustomobject] @{ palp_id = 'skipped' }
+                        palp_environment = [pscustomobject] @{ palp_id = 'legacy-skipped'; palp_adminguid = 'skipped'; palp_environmentid = '00000000-0000-0000-0000-000000000015' }
                         palp_komponentenstatus = 0; palp_status = 0
                     }
                 ) } }
@@ -355,7 +355,7 @@ Describe 'RPA deletion check' {
         }
         $collector = {
             param($environment, $configuration)
-            if ($environment.palp_id -eq 'bad') {
+            if ($environment.palp_adminguid -eq 'bad') {
                 throw 'HTTP 403: source environment cannot be read'
             }
             [pscustomobject] @{ Flows = @(); Logs = @(); Found = 0 }
@@ -383,7 +383,7 @@ Describe 'RPA deletion check' {
         $script:sourceChecks -join '|' | Should -Not -Match ([regex]::Escape($existingId))
         $script:batchBody | Should -Match "PATCH palp_komponentes\(palp_id='$missingId'\)"
         $script:batchBody | Should -Match '"palp_komponentenstatus":7'
-        $script:batchBody | Should -Match '"palp_status":1'
+        $script:batchBody | Should -Match '"palp_status":true'
         $script:batchBody | Should -Match '"palp_letztestatusaenderung":"2026-10-02T10:00:00'
         $script:batchBody | Should -Not -Match ([regex]::Escape($existingId))
         $script:batchBody | Should -Not -Match ([regex]::Escape($failedEnvironmentId))
@@ -403,7 +403,7 @@ Describe 'RPA deletion check' {
             if ($uriText -match '/palp_environments\?') {
                 return [pscustomobject] @{ Body = [pscustomobject] @{ value = @(
                     [pscustomobject] @{
-                        palp_id = 'good'; palp_name = 'Good'; palp_sku = 'Production'
+                        palp_id = 'legacy-good'; palp_adminguid = 'good'; palp_environmentid = '00000000-0000-0000-0000-000000000014'; palp_name = 'Good'; palp_sku = 'Production'
                         statecode = 0; palp_dataverseurl = 'https://good.crm.dynamics.com'
                     }
                 ) } }
@@ -412,12 +412,12 @@ Describe 'RPA deletion check' {
                 return [pscustomobject] @{ Body = [pscustomobject] @{ value = @(
                     [pscustomobject] @{
                         palp_id = $firstId; palp_typ = 4
-                        palp_environment = [pscustomobject] @{ palp_id = 'good' }
+                        palp_environment = [pscustomobject] @{ palp_id = 'legacy-good'; palp_adminguid = 'good'; palp_environmentid = '00000000-0000-0000-0000-000000000014' }
                         palp_komponentenstatus = 0; palp_status = 0
                     },
                     [pscustomobject] @{
                         palp_id = $secondId; palp_typ = 4
-                        palp_environment = [pscustomobject] @{ palp_id = 'good' }
+                        palp_environment = [pscustomobject] @{ palp_id = 'legacy-good'; palp_adminguid = 'good'; palp_environmentid = '00000000-0000-0000-0000-000000000014' }
                         palp_komponentenstatus = 0; palp_status = 0
                     }
                 ) } }
@@ -467,7 +467,7 @@ Describe 'RPA deletion check' {
             if ($uriText -match '/palp_environments\?') {
                 return [pscustomobject] @{ Body = [pscustomobject] @{ value = @(
                     [pscustomobject] @{
-                        palp_id = 'good'; palp_name = 'Good'; palp_sku = 'Production'
+                        palp_id = 'legacy-good'; palp_adminguid = 'good'; palp_environmentid = '00000000-0000-0000-0000-000000000014'; palp_name = 'Good'; palp_sku = 'Production'
                         statecode = 0; palp_dataverseurl = 'https://good.crm.dynamics.com'
                     }
                 ) } }
@@ -477,7 +477,7 @@ Describe 'RPA deletion check' {
                     [pscustomobject] @{
                         palp_id = $componentId; palp_typ = 4; palp_titel = 'Restored'
                         palp_besitzerobjectid = 'owner'; palp_beschreibung = 'Description'
-                        palp_environment = [pscustomobject] @{ palp_id = 'good' }
+                        palp_environment = [pscustomobject] @{ palp_id = 'legacy-good'; palp_adminguid = 'good'; palp_environmentid = '00000000-0000-0000-0000-000000000014' }
                         palp_urspruenglicherstelltam = '2026-09-01T08:00:00Z'
                         palp_urspruenglichgeaendertam = '2026-09-02T09:00:00Z'
                         palp_komponentenstatus = 7; palp_status = 1
@@ -524,7 +524,7 @@ Describe 'RPA deletion check' {
         $result.Logs[0].ComponentId | Should -Be 'restored-flow'
         $script:batchBody | Should -Match "PATCH palp_komponentes\(palp_id='$componentId'\)"
         $script:batchBody | Should -Match '"palp_komponentenstatus":0'
-        $script:batchBody | Should -Match '"palp_status":0'
+        $script:batchBody | Should -Match '"palp_status":false'
         $script:batchBody | Should -Match '"palp_letztestatusaenderung":"2026-10-02T10:00:00'
         Should -Invoke Invoke-InventoryHttpRequest -ModuleName InventorySync `
             -ParameterFilter { [string] $Uri -match '/workflows\?' } -Times 0 -Exactly

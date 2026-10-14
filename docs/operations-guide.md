@@ -54,10 +54,13 @@ deletes Dataverse rows.
 
 Before the first run, confirm that:
 
-- `palp_environment.palp_id` contains each source environment ID and its configured URL
-  column contains that environment's Dataverse URL.
-- The alternate key on `palp_komponente.palp_id` and the alternate key on
-  `palp_environment.palp_id` exist.
+- Admin GUID (`palp_environment.palp_adminguid`) contains each full source environment
+  ID, including `Default-<tenant-id>` for Default. Matching is case-insensitive and
+  each Admin GUID must identify exactly one Environment row. Components bind to that
+  row's `palp_environmentid`, not the Environment alternate key on `palp_id`.
+  Missing mappings are skipped and logged; duplicates fail the run before component
+  writes. The configured URL column contains the source Dataverse URL for RPA.
+- The alternate key on `palp_komponente.palp_id` exists and is active.
 - Network restrictions allow the Function App to reach Entra token endpoints,
   `management.azure.com`, the target Dataverse URL, and every included source
   Dataverse URL.
@@ -86,6 +89,11 @@ Verify that **Sync Run** and **Sync Log** exist and that their entity-set names 
 `invs_syncruns` and `invs_synclogs`. If a customer customization changes the entity-set
 names, put the actual plural entity-set names—not display names or logical table
 names—in `INVENTORY_SYNC_RUN_TABLE` and `INVENTORY_SYNC_LOG_TABLE`.
+
+Publish both logging tables after import. Verify their custom columns are exposed
+in the Dataverse Web API `$metadata`, not only in table designer metadata; unpublished
+columns cause HTTP 400 errors on logging writes. Sync Log binds its Sync Run through
+the `invs_syncrun_synclogs` navigation property shipped in the logging solution.
 
 Create or update the application-user security role with the logging-table privileges
 listed above. Operators who inspect smoke results also need Read access to both tables.

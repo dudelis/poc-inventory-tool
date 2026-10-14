@@ -15,6 +15,15 @@
     <CascadeUnshare>NoCascade</CascadeUnshare>
     <IsValidForAdvancedFind>1</IsValidForAdvancedFind>
     <ReferencingAttributeName>invs_syncrunid</ReferencingAttributeName>
+    <EntityRelationshipRoles>
+      <EntityRelationshipRole>
+        <NavPaneDisplayOption>UseCollectionName</NavPaneDisplayOption>
+        <NavPaneAreaDisplayOption>Details</NavPaneAreaDisplayOption>
+        <NavPaneAreaOrder>10000</NavPaneAreaOrder>
+        <NavigationPropertyName>invs_syncrun_synclogs</NavigationPropertyName>
+        <RelationshipRoleType>1</RelationshipRoleType>
+      </EntityRelationshipRole>
+    </EntityRelationshipRoles>
     <RelationshipDescription>
       <Descriptions>
         <Description description="Problem details recorded for a sync run." languagecode="1033" />

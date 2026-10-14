@@ -18,7 +18,13 @@ function Get-RpaEnvironmentPlan {
     $selected = [System.Collections.Generic.List[object]]::new()
     $logs = [System.Collections.Generic.List[object]]::new()
     foreach ($environment in $Environments) {
-        $id = [string] $environment.palp_id
+        $adminGuidProperty = $environment.PSObject.Properties['palp_adminguid']
+        $id = if ($null -ne $adminGuidProperty) {
+            ([string] $adminGuidProperty.Value).Trim()
+        }
+        else {
+            ''
+        }
         $nameProperty = $environment.PSObject.Properties['palp_name']
         $name = if ($null -ne $nameProperty) { [string] $nameProperty.Value } else { '' }
         $skuProperty = $environment.PSObject.Properties['palp_sku']
@@ -34,7 +40,10 @@ function Get-RpaEnvironmentPlan {
             ($null -ne $removedProperty -and [bool] $removedProperty.Value) -or
             ($null -ne $statusProperty -and [string] $statusProperty.Value -match '^(Deleted|Removed)$')
 
-        $reason = if ($excluded.Contains($sku)) {
+        $reason = if ([string]::IsNullOrWhiteSpace($id)) {
+            'Environment has no Admin GUID in palp_adminguid.'
+        }
+        elseif ($excluded.Contains($sku)) {
             "Environment SKU '$sku' is excluded."
         }
         elseif ($isRemoved) {
@@ -99,7 +108,7 @@ function Get-RpaDesktopFlows {
         [Parameter(Mandatory)] [ValidateNotNullOrEmpty()] [string] $AccessToken
     )
 
-    $environmentId = [string] $Environment.palp_id
+    $environmentId = ([string] $Environment.palp_adminguid).Trim()
     $environmentNameProperty = $Environment.PSObject.Properties['palp_name']
     $environmentName = if ($null -ne $environmentNameProperty) {
         [string] $environmentNameProperty.Value
@@ -274,7 +283,7 @@ function Invoke-RpaEnvironmentFanOut {
             }
             foreach ($jobResult in $jobResults) {
                 if ($jobResult.Succeeded) {
-                    $successfulIds.Add([string] $jobResult.Environment.palp_id)
+                    $successfulIds.Add(([string] $jobResult.Environment.palp_adminguid).Trim())
                     foreach ($flow in @($jobResult.Value.Flows)) {
                         $flows.Add($flow)
                     }
@@ -295,7 +304,7 @@ function Invoke-RpaEnvironmentFanOut {
                 $failure = [pscustomobject] [ordered] @{
                     Severity        = 'Error'
                     Category        = Get-RpaFailureCategory -Message ([string] $jobResult.Error)
-                    EnvironmentId   = [string] $jobResult.Environment.palp_id
+                    EnvironmentId   = ([string] $jobResult.Environment.palp_adminguid).Trim()
                     EnvironmentName = [string] $jobResult.Environment.palp_name
                     ComponentType   = 4
                     ComponentId     = ''
@@ -370,7 +379,7 @@ function Invoke-RpaSync {
         $baseUrl = $Configuration.TargetDataverseUrl.TrimEnd('/')
         $urlColumn = [string] $Configuration.RpaEnvironmentUrlColumn
         $environmentQuery = 'palp_environments?' +
-            "`$select=palp_id,palp_name,palp_sku,statecode,$urlColumn"
+            "`$select=palp_adminguid,palp_environmentid,palp_name,palp_sku,statecode,$urlColumn"
         $environmentRows = @(Get-DataversePagedRecords `
             -Uri "$baseUrl/api/data/v9.2/$environmentQuery" -AccessToken $DataverseAccessToken)
         $environmentPlan = Get-RpaEnvironmentPlan -Environments $environmentRows `
@@ -393,7 +402,7 @@ function Invoke-RpaSync {
             '$select=palp_id,palp_typ,palp_titel,palp_besitzerobjectid,palp_beschreibung,' +
             'palp_urspruenglicherstelltam,palp_urspruenglichgeaendertam,' +
             'palp_komponentenstatus,palp_status' +
-            '&$expand=palp_environment($select=palp_id)&$filter=palp_typ%20eq%204'
+            '&$expand=palp_Environment($select=palp_adminguid,palp_environmentid)&$filter=palp_typ%20eq%204'
         $existingComponents = @(Get-DataversePagedRecords `
             -Uri "$baseUrl/api/data/v9.2/$componentQuery" -AccessToken $DataverseAccessToken)
         $capProperty = $Configuration.PSObject.Properties['MaxCreatesPerRun']

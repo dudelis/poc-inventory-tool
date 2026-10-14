@@ -38,7 +38,7 @@ Describe 'Agent Builder deletion check' {
             if ($uriText -match '/palp_environments\?') {
                 return [pscustomobject] @{
                     Body = [pscustomobject] @{
-                        value = @([pscustomobject] @{ palp_id = 'environment-1' })
+                        value = @([pscustomobject] @{ palp_id = 'legacy-environment-1'; palp_adminguid = 'environment-1'; palp_environmentid = '00000000-0000-0000-0000-000000000001' })
                     }
                 }
             }
@@ -49,24 +49,24 @@ Describe 'Agent Builder deletion check' {
                             [pscustomobject] @{
                                 palp_id = $collectedId; palp_typ = 5; palp_titel = 'Collected'
                                 palp_besitzerobjectid = 'owner-1'; palp_beschreibung = ''
-                                palp_environment = [pscustomobject] @{ palp_id = 'environment-1' }
+                                palp_environment = [pscustomobject] @{ palp_id = 'legacy-environment-1'; palp_adminguid = 'environment-1'; palp_environmentid = '00000000-0000-0000-0000-000000000001' }
                                 palp_urspruenglicherstelltam = '2026-09-01T08:00:00Z'
                                 palp_urspruenglichgeaendertam = '2026-09-02T09:00:00Z'
                                 palp_komponentenstatus = 0; palp_status = 0
                             },
                             [pscustomobject] @{
                                 palp_id = $missingId; palp_typ = 5
-                                palp_environment = [pscustomobject] @{ palp_id = 'environment-1' }
+                                palp_environment = [pscustomobject] @{ palp_id = 'legacy-environment-1'; palp_adminguid = 'environment-1'; palp_environmentid = '00000000-0000-0000-0000-000000000001' }
                                 palp_komponentenstatus = 0; palp_status = 0
                             },
                             [pscustomobject] @{
                                 palp_id = $stillExistingId; palp_typ = 5
-                                palp_environment = [pscustomobject] @{ palp_id = 'environment-1' }
+                                palp_environment = [pscustomobject] @{ palp_id = 'legacy-environment-1'; palp_adminguid = 'environment-1'; palp_environmentid = '00000000-0000-0000-0000-000000000001' }
                                 palp_komponentenstatus = 0; palp_status = 0
                             },
                             [pscustomobject] @{
                                 palp_id = $inactiveId; palp_typ = 5
-                                palp_environment = [pscustomobject] @{ palp_id = 'environment-1' }
+                                palp_environment = [pscustomobject] @{ palp_id = 'legacy-environment-1'; palp_adminguid = 'environment-1'; palp_environmentid = '00000000-0000-0000-0000-000000000001' }
                                 palp_komponentenstatus = 7; palp_status = 1
                             }
                         )
@@ -100,7 +100,7 @@ Describe 'Agent Builder deletion check' {
         $script:batchBodies | Should -HaveCount 1
         $script:batchBodies[0] | Should -Match "PATCH palp_komponentes\(palp_id='$missingId'\)"
         $script:batchBodies[0] | Should -Match '"palp_komponentenstatus":7'
-        $script:batchBodies[0] | Should -Match '"palp_status":1'
+        $script:batchBodies[0] | Should -Match '"palp_status":true'
         $script:batchBodies[0] | Should -Match '"palp_letztestatusaenderung":"2026-10-02T10:00:00'
         $script:batchBodies[0] | Should -Not -Match ([regex]::Escape($stillExistingId))
         $script:batchBodies[0] | Should -Not -Match 'DELETE '
@@ -144,7 +144,7 @@ Describe 'Agent Builder deletion check' {
             if ($uriText -match '/palp_environments\?') {
                 return [pscustomobject] @{
                     Body = [pscustomobject] @{
-                        value = @([pscustomobject] @{ palp_id = 'environment-1' })
+                        value = @([pscustomobject] @{ palp_id = 'legacy-environment-1'; palp_adminguid = 'environment-1'; palp_environmentid = '00000000-0000-0000-0000-000000000001' })
                     }
                 }
             }
@@ -154,12 +154,12 @@ Describe 'Agent Builder deletion check' {
                         value = @(
                             [pscustomobject] @{
                                 palp_id = $firstId; palp_typ = 5
-                                palp_environment = [pscustomobject] @{ palp_id = 'environment-1' }
+                                palp_environment = [pscustomobject] @{ palp_id = 'legacy-environment-1'; palp_adminguid = 'environment-1'; palp_environmentid = '00000000-0000-0000-0000-000000000001' }
                                 palp_komponentenstatus = 0; palp_status = 0
                             },
                             [pscustomobject] @{
                                 palp_id = $secondId; palp_typ = 5
-                                palp_environment = [pscustomobject] @{ palp_id = 'environment-1' }
+                                palp_environment = [pscustomobject] @{ palp_id = 'legacy-environment-1'; palp_adminguid = 'environment-1'; palp_environmentid = '00000000-0000-0000-0000-000000000001' }
                                 palp_komponentenstatus = 0; palp_status = 0
                             }
                         )
@@ -208,7 +208,7 @@ Describe 'Agent Builder deletion check' {
             if ($uriText -match '/palp_environments\?') {
                 return [pscustomobject] @{
                     Body = [pscustomobject] @{
-                        value = @([pscustomobject] @{ palp_id = 'environment-1' })
+                        value = @([pscustomobject] @{ palp_id = 'legacy-environment-1'; palp_adminguid = 'environment-1'; palp_environmentid = '00000000-0000-0000-0000-000000000001' })
                     }
                 }
             }
@@ -218,7 +218,7 @@ Describe 'Agent Builder deletion check' {
                         value = @([pscustomobject] @{
                             palp_id = $componentId; palp_typ = 5; palp_titel = 'Restored'
                             palp_besitzerobjectid = 'owner-1'; palp_beschreibung = ''
-                            palp_environment = [pscustomobject] @{ palp_id = 'environment-1' }
+                            palp_environment = [pscustomobject] @{ palp_id = 'legacy-environment-1'; palp_adminguid = 'environment-1'; palp_environmentid = '00000000-0000-0000-0000-000000000001' }
                             palp_urspruenglicherstelltam = '2026-09-01T08:00:00Z'
                             palp_urspruenglichgeaendertam = '2026-09-02T09:00:00Z'
                             palp_komponentenstatus = 7; palp_status = 1
@@ -252,7 +252,7 @@ Describe 'Agent Builder deletion check' {
         $result.Logs[0].ComponentId | Should -Be 'restored-agent'
         $script:batchBody | Should -Match "PATCH palp_komponentes\(palp_id='$componentId'\)"
         $script:batchBody | Should -Match '"palp_komponentenstatus":0'
-        $script:batchBody | Should -Match '"palp_status":0'
+        $script:batchBody | Should -Match '"palp_status":false'
         $script:batchBody | Should -Match '"palp_letztestatusaenderung":"2026-10-02T10:00:00'
     }
 
@@ -286,12 +286,12 @@ Describe 'Agent Builder deletion check' {
                         value = @(
                             [pscustomobject] @{
                                 palp_id = $firstId; palp_typ = 5
-                                palp_environment = [pscustomobject] @{ palp_id = 'environment-1' }
+                                palp_environment = [pscustomobject] @{ palp_id = 'legacy-environment-1'; palp_adminguid = 'environment-1'; palp_environmentid = '00000000-0000-0000-0000-000000000001' }
                                 palp_komponentenstatus = 0; palp_status = 0
                             },
                             [pscustomobject] @{
                                 palp_id = $secondId; palp_typ = 5
-                                palp_environment = [pscustomobject] @{ palp_id = 'environment-2' }
+                                palp_environment = [pscustomobject] @{ palp_id = 'legacy-environment-2'; palp_adminguid = 'environment-2'; palp_environmentid = '00000000-0000-0000-0000-000000000002' }
                                 palp_komponentenstatus = 0; palp_status = 0
                             }
                         )
@@ -350,7 +350,7 @@ Describe 'Agent Builder deletion check' {
                     Body = [pscustomobject] @{
                         value = @([pscustomobject] @{
                             palp_id = $candidateId; palp_typ = 5
-                            palp_environment = [pscustomobject] @{ palp_id = 'environment-1' }
+                            palp_environment = [pscustomobject] @{ palp_id = 'legacy-environment-1'; palp_adminguid = 'environment-1'; palp_environmentid = '00000000-0000-0000-0000-000000000001' }
                             palp_komponentenstatus = 0; palp_status = 0
                         })
                     }
@@ -400,7 +400,7 @@ Describe 'Agent Builder deletion check' {
             if ($uriText -match '/palp_environments\?') {
                 return [pscustomobject] @{
                     Body = [pscustomobject] @{
-                        value = @([pscustomobject] @{ palp_id = 'environment-1' })
+                        value = @([pscustomobject] @{ palp_id = 'legacy-environment-1'; palp_adminguid = 'environment-1'; palp_environmentid = '00000000-0000-0000-0000-000000000001' })
                     }
                 }
             }

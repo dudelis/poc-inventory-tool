@@ -62,7 +62,7 @@ function ConvertFrom-InventoryJson {
     }
 
     try {
-        return $Content | ConvertFrom-Json -Depth 100
+        return $Content | ConvertFrom-Json -Depth 100 -DateKind String
     }
     catch {
         return $Content

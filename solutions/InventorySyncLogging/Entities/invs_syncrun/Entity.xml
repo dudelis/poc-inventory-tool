@@ -20,7 +20,9 @@
         </attribute>
         <attribute PhysicalName="invs_Name">
           <Type>nvarchar</Type><Name>invs_name</Name><LogicalName>invs_name</LogicalName>
-          <RequiredLevel>applicationrequired</RequiredLevel><MaxLength>200</MaxLength><Format>text</Format>
+          <RequiredLevel>applicationrequired</RequiredLevel>
+          <DisplayMask>PrimaryName|ValidForAdvancedFind|ValidForForm|ValidForGrid</DisplayMask>
+          <MaxLength>200</MaxLength><Format>text</Format>
           <IsCustomField>1</IsCustomField>
           <displaynames><displayname description="Name" languagecode="1033" /></displaynames>
         </attribute>

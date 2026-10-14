@@ -34,7 +34,7 @@ function Start-InventorySyncRun {
             invs_errors            = 0
         }
         $headers = @{
-            Authorization = "******"
+            Authorization = 'Bearer ' + $AccessToken
             Accept        = 'application/json'
         }
         $baseUrl = $DataverseUrl.TrimEnd('/')
@@ -109,7 +109,7 @@ function Complete-InventorySyncRun {
             invs_errors             = [int] $Counts.Errors
         }
         $headers = @{
-            Authorization = "******"
+            Authorization = 'Bearer ' + $AccessToken
             Accept        = 'application/json'
         }
         $baseUrl = $DataverseUrl.TrimEnd('/')
@@ -191,7 +191,7 @@ function Write-InventorySyncLog {
         }
         $payload = [ordered] @{
             invs_synclogid                   = [guid]::NewGuid().ToString()
-            'invs_syncrunid@odata.bind'      = "/$SyncRunTableName($RunRecordId)"
+            'invs_syncrun_synclogs@odata.bind' = "/$SyncRunTableName($RunRecordId)"
             invs_severity                    = if ($Severity -eq 'Warning') { 100000000 } else { 100000001 }
             invs_category                    = $categoryValue
             invs_environmentid               = $EnvironmentId
@@ -206,7 +206,7 @@ function Write-InventorySyncLog {
             invs_correlationid               = $CorrelationId
         }
         $headers = @{
-            Authorization = "******"
+            Authorization = 'Bearer ' + $AccessToken
             Accept        = 'application/json'
         }
         $baseUrl = $DataverseUrl.TrimEnd('/')

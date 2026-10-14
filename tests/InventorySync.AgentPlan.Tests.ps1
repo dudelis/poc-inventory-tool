@@ -4,7 +4,7 @@ BeforeAll {
 }
 
 Describe 'Agent Builder create plan' {
-    It 'maps a new agent to the component defaults and environment alternate key' {
+    It 'maps a new agent to the component defaults and Environment row ID' {
         $agent = [pscustomobject] @{
             agentId       = 'agent-1'
             title         = 'Agent one'
@@ -16,7 +16,7 @@ Describe 'Agent Builder create plan' {
         $now = [datetimeoffset] '2026-10-02T10:00:00Z'
 
         $plan = New-AgentComponentCreatePlan -Agents @($agent) `
-            -Environments @([pscustomobject] @{ palp_id = 'environment-1' }) `
+            -Environments @([pscustomobject] @{ palp_id = 'legacy-environment-1'; palp_adminguid = 'environment-1'; palp_environmentid = '00000000-0000-0000-0000-000000000001' }) `
             -ExistingComponentIds @() -Now $now
 
         $plan.Counts.Created | Should -Be 1
@@ -29,11 +29,12 @@ Describe 'Agent Builder create plan' {
         $plan.Writes[0].Payload.palp_titel | Should -Be 'Agent one'
         $plan.Writes[0].Payload.palp_besitzerobjectid | Should -Be 'owner-1'
         $plan.Writes[0].Payload.'palp_environment@odata.bind' |
-            Should -Be "/palp_environments(palp_id='environment-1')"
+            Should -Be "/palp_environments(00000000-0000-0000-0000-000000000001)"
         $plan.Writes[0].Payload.palp_urspruenglicherstelltam | Should -Be '2026-09-01T08:00:00Z'
         $plan.Writes[0].Payload.palp_urspruenglichgeaendertam | Should -Be '2026-09-02T09:00:00Z'
         $plan.Writes[0].Payload.palp_komponentenstatus | Should -Be 0
-        $plan.Writes[0].Payload.palp_status | Should -Be 0
+        $plan.Writes[0].Payload.palp_status | Should -BeOfType ([bool])
+        $plan.Writes[0].Payload.palp_status | Should -BeFalse
         $plan.Writes[0].Payload.palp_nutzungsbereich | Should -Be 0
         $plan.Writes[0].Payload.palp_letztestatusaenderung |
             Should -Be '2026-10-02T10:00:00.0000000+00:00'

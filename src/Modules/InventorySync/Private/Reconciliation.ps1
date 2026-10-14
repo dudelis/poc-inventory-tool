@@ -43,7 +43,7 @@ function Test-InventoryTechnicalValueEqual {
             [datetimeoffset]::TryParse([string] $ExistingValue, [ref] $existingTimestamp) -and
             [datetimeoffset]::TryParse([string] $SourceValue, [ref] $sourceTimestamp)
         ) {
-            return $existingTimestamp.UtcTicks -eq $sourceTimestamp.UtcTicks
+            return $existingTimestamp.ToUnixTimeSeconds() -eq $sourceTimestamp.ToUnixTimeSeconds()
         }
     }
     if ($FieldName -eq 'palp_besitzerobjectid') {
@@ -51,6 +51,66 @@ function Test-InventoryTechnicalValueEqual {
     }
 
     [string] $ExistingValue -ceq [string] $SourceValue
+}
+
+function Resolve-InventoryModifiedTimestamp {
+    param(
+        [Parameter(Mandatory)] [AllowEmptyString()] [string] $CreatedAt,
+        [Parameter(Mandatory)] [AllowEmptyString()] [string] $ModifiedAt,
+        [Parameter(Mandatory)] [string] $EnvironmentId,
+        [Parameter(Mandatory)] [string] $ComponentId,
+        [Parameter(Mandatory)] [int] $ComponentType,
+        [Parameter(Mandatory)] [string] $Operation,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [System.Collections.Generic.List[object]] $Logs
+    )
+
+    if (-not [string]::IsNullOrWhiteSpace($ModifiedAt)) {
+        return $ModifiedAt
+    }
+    $creationTimestamp = [datetimeoffset]::MinValue
+    if (-not [datetimeoffset]::TryParse($CreatedAt,
+            [System.Globalization.CultureInfo]::InvariantCulture,
+            [System.Globalization.DateTimeStyles]::AssumeUniversal,
+            [ref] $creationTimestamp)) {
+        throw "Component '$ComponentId' has no valid source creation timestamp for the modified-date fallback."
+    }
+    $Logs.Add((New-InventorySyncLogEntry -Severity Warning -Category Config `
+        -EnvironmentId $EnvironmentId -ComponentType $ComponentType `
+        -ComponentId $ComponentId -Operation $Operation `
+        -Message 'The source modification timestamp is missing; using a fallback to the source creation timestamp.'))
+    $CreatedAt
+}
+
+function New-InventoryEnvironmentMap {
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]] $Environments
+    )
+
+    $environmentRowsByAdminGuid = @{}
+    foreach ($environment in $Environments) {
+        $adminGuidProperty = $environment.PSObject.Properties['palp_adminguid']
+        $adminGuid = if ($null -ne $adminGuidProperty) {
+            ([string] $adminGuidProperty.Value).Trim()
+        }
+        else {
+            ''
+        }
+        if ([string]::IsNullOrWhiteSpace($adminGuid)) {
+            continue
+        }
+        $rowId = [guid]::Empty
+        $rowIdProperty = $environment.PSObject.Properties['palp_environmentid']
+        if ($null -eq $rowIdProperty -or
+            -not [guid]::TryParse([string] $rowIdProperty.Value, [ref] $rowId) -or
+            $rowId -eq [guid]::Empty) {
+            throw "Environment '$adminGuid' has no valid Dataverse row ID."
+        }
+        if ($environmentRowsByAdminGuid.ContainsKey($adminGuid)) {
+            throw "More than one Environment row has Admin GUID '$adminGuid'."
+        }
+        $environmentRowsByAdminGuid[$adminGuid] = $rowId.ToString()
+    }
+    $environmentRowsByAdminGuid
 }
 
 function New-InventoryComponentReconciliationPlan {
@@ -75,18 +135,7 @@ function New-InventoryComponentReconciliationPlan {
             $existingById[[string] $idProperty.Value] = $existing
         }
     }
-    $knownEnvironmentIds = [System.Collections.Generic.HashSet[string]]::new(
-        [System.StringComparer]::OrdinalIgnoreCase
-    )
-    foreach ($environment in $Environments) {
-        $environmentIdProperty = $environment.PSObject.Properties['palp_id']
-        if (
-            $null -ne $environmentIdProperty -and
-            -not [string]::IsNullOrWhiteSpace([string] $environmentIdProperty.Value)
-        ) {
-            $null = $knownEnvironmentIds.Add(([string] $environmentIdProperty.Value).Trim())
-        }
-    }
+    $environmentRowsByAdminGuid = New-InventoryEnvironmentMap -Environments $Environments
 
     $writes = [System.Collections.Generic.List[object]]::new()
     $logs = [System.Collections.Generic.List[object]]::new()
@@ -99,7 +148,26 @@ function New-InventoryComponentReconciliationPlan {
         $environmentId = ([string] $source.EnvironmentId).Trim()
         $componentId = New-InventoryComponentId -EnvironmentId $environmentId `
             -ComponentType $ComponentType -SourceId ([string] $source.SourceId)
-        $escapedEnvironmentId = $environmentId.Replace("'", "''")
+        if (-not $environmentRowsByAdminGuid.ContainsKey($environmentId)) {
+            $logs.Add([pscustomobject] [ordered] @{
+                Severity      = 'Warning'
+                Category      = 'Skipped'
+                EnvironmentId = $environmentId
+                ComponentType = $ComponentType
+                ComponentId   = [string] $source.SourceId
+                Operation     = if ($existingById.ContainsKey($componentId)) { 'Update' } else { 'Create' }
+                Message       = "Environment '$environmentId' is not present in palp_environment by Admin GUID."
+            })
+            $skipped++
+            continue
+        }
+        $environmentRowId = $environmentRowsByAdminGuid[$environmentId]
+        $modifiedTimestamp = Resolve-InventoryModifiedTimestamp `
+            -CreatedAt ([string] $source.SourceCreatedAt) `
+            -ModifiedAt ([string] $source.SourceModifiedAt) `
+            -EnvironmentId $environmentId -ComponentId ([string] $source.SourceId) `
+            -ComponentType $ComponentType -Logs $logs `
+            -Operation $(if ($existingById.ContainsKey($componentId)) { 'Update' } else { 'Create' })
         if ($existingById.ContainsKey($componentId)) {
             $existing = $existingById[$componentId]
             $payload = [ordered] @{}
@@ -111,7 +179,7 @@ function New-InventoryComponentReconciliationPlan {
                 palp_besitzerobjectid         = [string] $source.OwnerObjectId
                 palp_beschreibung             = $source.Description
                 palp_urspruenglicherstelltam  = [string] $source.SourceCreatedAt
-                palp_urspruenglichgeaendertam = [string] $source.SourceModifiedAt
+                palp_urspruenglichgeaendertam = $modifiedTimestamp
             }
             foreach ($mapping in $fieldMappings.GetEnumerator()) {
                 $existingProperty = $existing.PSObject.Properties[$mapping.Key]
@@ -122,21 +190,21 @@ function New-InventoryComponentReconciliationPlan {
                 }
             }
 
-            $existingEnvironmentId = $null
-            $environmentProperty = $existing.PSObject.Properties['palp_environment']
+            $existingEnvironmentRowId = $null
+            $environmentProperty = $existing.PSObject.Properties['palp_Environment']
             if ($null -ne $environmentProperty -and $null -ne $environmentProperty.Value) {
-                $environmentIdProperty = $environmentProperty.Value.PSObject.Properties['palp_id']
-                if ($null -ne $environmentIdProperty) {
-                    $existingEnvironmentId = [string] $environmentIdProperty.Value
+                $environmentRowIdProperty = $environmentProperty.Value.PSObject.Properties['palp_environmentid']
+                if ($null -ne $environmentRowIdProperty) {
+                    $existingEnvironmentRowId = [string] $environmentRowIdProperty.Value
                 }
             }
-            if ($existingEnvironmentId -ine $environmentId) {
-                $payload['palp_environment@odata.bind'] =
-                    "/palp_environments(palp_id='$escapedEnvironmentId')"
+            if ($existingEnvironmentRowId -ine $environmentRowId) {
+                $payload['palp_Environment@odata.bind'] =
+                    "/palp_environments($environmentRowId)"
             }
             if ($isDeleted) {
                 $payload.palp_komponentenstatus = 0
-                $payload.palp_status = 0
+                $payload.palp_status = $false
                 $payload.palp_letztestatusaenderung = $Now.ToString('o')
             }
 
@@ -173,20 +241,6 @@ function New-InventoryComponentReconciliationPlan {
             continue
         }
 
-        if (-not $knownEnvironmentIds.Contains($environmentId)) {
-            $logs.Add([pscustomobject] [ordered] @{
-                Severity      = 'Warning'
-                Category      = 'Skipped'
-                EnvironmentId = $environmentId
-                ComponentType = $ComponentType
-                ComponentId   = [string] $source.SourceId
-                Operation     = 'Create'
-                Message       = "Environment '$environmentId' is not present in palp_environment."
-            })
-            $skipped++
-            continue
-        }
-
         if ($created -ge $CreationCap) {
             $logs.Add([pscustomobject] [ordered] @{
                 Severity      = 'Warning'
@@ -210,11 +264,11 @@ function New-InventoryComponentReconciliationPlan {
                 palp_titel                    = [string] $source.Title
                 palp_besitzerobjectid         = [string] $source.OwnerObjectId
                 palp_beschreibung             = $source.Description
-                'palp_environment@odata.bind' = "/palp_environments(palp_id='$escapedEnvironmentId')"
+                'palp_Environment@odata.bind' = "/palp_environments($environmentRowId)"
                 palp_urspruenglicherstelltam  = [string] $source.SourceCreatedAt
-                palp_urspruenglichgeaendertam = [string] $source.SourceModifiedAt
+                palp_urspruenglichgeaendertam = $modifiedTimestamp
                 palp_komponentenstatus        = 0
-                palp_status                   = 0
+                palp_status                   = $false
                 palp_nutzungsbereich          = 0
                 palp_letztestatusaenderung    = $Now.ToString('o')
             }
@@ -248,14 +302,7 @@ function New-AgentComponentCreatePlan {
         [Parameter()] [datetimeoffset] $Now = [datetimeoffset]::UtcNow
     )
 
-    $knownEnvironmentIds = [System.Collections.Generic.HashSet[string]]::new(
-        [System.StringComparer]::OrdinalIgnoreCase
-    )
-    foreach ($environment in $Environments) {
-        if (-not [string]::IsNullOrWhiteSpace([string] $environment.palp_id)) {
-            $null = $knownEnvironmentIds.Add(([string] $environment.palp_id).Trim())
-        }
-    }
+    $environmentRowsByAdminGuid = New-InventoryEnvironmentMap -Environments $Environments
 
     $existingIds = [System.Collections.Generic.HashSet[string]]::new(
         [System.StringComparer]::OrdinalIgnoreCase
@@ -283,7 +330,7 @@ function New-AgentComponentCreatePlan {
             continue
         }
 
-        if (-not $knownEnvironmentIds.Contains($environmentId)) {
+        if (-not $environmentRowsByAdminGuid.ContainsKey($environmentId)) {
             $logs.Add([pscustomobject] [ordered] @{
                 Severity      = 'Warning'
                 Category      = 'Skipped'
@@ -291,23 +338,27 @@ function New-AgentComponentCreatePlan {
                 ComponentType = 5
                 ComponentId   = $sourceId
                 Operation     = 'Create'
-                Message       = "Environment '$environmentId' is not present in palp_environment."
+                Message       = "Environment '$environmentId' is not present in palp_environment by Admin GUID."
             })
             $skipped++
             continue
         }
 
-        $escapedEnvironmentId = $environmentId.Replace("'", "''")
+        $environmentRowId = $environmentRowsByAdminGuid[$environmentId]
+        $modifiedTimestamp = Resolve-InventoryModifiedTimestamp `
+            -CreatedAt ([string] $agent.createdAt) -ModifiedAt ([string] $agent.modifiedAt) `
+            -EnvironmentId $environmentId -ComponentId $sourceId `
+            -ComponentType 5 -Operation Create -Logs $logs
         $payload = [ordered] @{
             palp_id                       = $componentId
             palp_typ                      = 5
             palp_titel                    = [string] $agent.title
             palp_besitzerobjectid         = [string] $agent.ownerId
-            'palp_environment@odata.bind' = "/palp_environments(palp_id='$escapedEnvironmentId')"
+            'palp_Environment@odata.bind' = "/palp_environments($environmentRowId)"
             palp_urspruenglicherstelltam  = [string] $agent.createdAt
-            palp_urspruenglichgeaendertam = [string] $agent.modifiedAt
+            palp_urspruenglichgeaendertam = $modifiedTimestamp
             palp_komponentenstatus        = 0
-            palp_status                   = 0
+            palp_status                   = $false
             palp_nutzungsbereich          = 0
             palp_letztestatusaenderung    = $Now.ToString('o')
         }

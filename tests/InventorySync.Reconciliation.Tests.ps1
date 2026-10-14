@@ -26,10 +26,34 @@ BeforeAll {
 }
 
 Describe 'Shared component reconciliation' {
+    It 'matches the full Default Admin GUID and binds its Dataverse row for type <ComponentType>' -ForEach @(
+        @{ ComponentType = 4 }
+        @{ ComponentType = 5 }
+    ) {
+        $source = New-TestSourceComponent `
+            -EnvironmentId 'default-4658d2db-ccde-47b9-84f0-8e9bbf015628'
+        $environment = [pscustomobject] @{
+            palp_id = 'Default-4658d2db-ccde-47b9-84f0-8e9b'
+            palp_adminguid = 'Default-4658d2db-ccde-47b9-84f0-8e9bbf015628'
+            palp_environmentid = '5a5c35ce-3fc6-f111-aaad-000d3ab63df3'
+        }
+
+        $plan = New-InventoryComponentReconciliationPlan `
+            -SourceComponents @($source) -Environments @($environment) `
+            -ExistingComponents @() -ComponentType $ComponentType
+
+        $plan.Counts.Created | Should -Be 1
+        $plan.Counts.Skipped | Should -Be 0
+        $plan.Writes[0].Payload.palp_status | Should -BeOfType ([bool])
+        $plan.Writes[0].Payload.palp_status | Should -BeFalse
+        $plan.Writes[0].Payload.'palp_environment@odata.bind' |
+            Should -Be '/palp_environments(5a5c35ce-3fc6-f111-aaad-000d3ab63df3)'
+    }
+
     It 'creates a missing component with technical values and governance defaults' {
         $plan = New-InventoryComponentReconciliationPlan `
             -SourceComponents @(New-TestSourceComponent) `
-            -Environments @([pscustomobject] @{ palp_id = 'environment-1' }) `
+            -Environments @([pscustomobject] @{ palp_id = 'legacy-environment-1'; palp_adminguid = 'environment-1'; palp_environmentid = '00000000-0000-0000-0000-000000000001' }) `
             -ExistingComponents @() -ComponentType 5 -CreationCap 10 `
             -Now ([datetimeoffset] '2026-10-02T10:00:00Z')
 
@@ -42,6 +66,19 @@ Describe 'Shared component reconciliation' {
         $plan.Writes[0].Payload.palp_komponentenstatus | Should -Be 0
     }
 
+    It 'skips and logs a legacy ID match when Admin GUID is missing' {
+        $plan = New-InventoryComponentReconciliationPlan `
+            -SourceComponents @(New-TestSourceComponent) `
+            -Environments @([pscustomobject] @{
+                palp_id = 'environment-1'
+                palp_environmentid = '00000000-0000-0000-0000-000000000001'
+            }) -ExistingComponents @() -ComponentType 5
+
+        $plan.Writes | Should -HaveCount 0
+        $plan.Counts.Skipped | Should -Be 1
+        $plan.Logs[0].Message | Should -Match 'Admin GUID'
+    }
+
     It 'updates only technical values that changed' {
         $source = New-TestSourceComponent
         $componentId = New-InventoryComponentId -EnvironmentId $source.EnvironmentId `
@@ -51,7 +88,7 @@ Describe 'Shared component reconciliation' {
             palp_titel                    = 'Old title'
             palp_besitzerobjectid         = 'old-owner'
             palp_beschreibung             = 'Old description'
-            palp_environment              = [pscustomobject] @{ palp_id = 'old-environment' }
+            palp_environment              = [pscustomobject] @{ palp_id = 'legacy-old-environment'; palp_adminguid = 'old-environment'; palp_environmentid = '00000000-0000-0000-0000-000000000003' }
             palp_urspruenglicherstelltam  = '2026-08-01T08:00:00Z'
             palp_urspruenglichgeaendertam = '2026-08-02T09:00:00Z'
             palp_komponentenstatus        = 3
@@ -67,7 +104,7 @@ Describe 'Shared component reconciliation' {
 
         $plan = New-InventoryComponentReconciliationPlan `
             -SourceComponents @($source) `
-            -Environments @([pscustomobject] @{ palp_id = 'environment-1' }) `
+            -Environments @([pscustomobject] @{ palp_id = 'legacy-environment-1'; palp_adminguid = 'environment-1'; palp_environmentid = '00000000-0000-0000-0000-000000000001' }) `
             -ExistingComponents @($existing) -ComponentType 5 -CreationCap 10
 
         $plan.Counts.Updated | Should -Be 1
@@ -87,7 +124,9 @@ Describe 'Shared component reconciliation' {
     }
 
     It 'does not write an unchanged component' {
-        $source = New-TestSourceComponent
+        $source = New-TestSourceComponent `
+            -SourceCreatedAt '2026-09-01T08:00:00.7689191Z' `
+            -SourceModifiedAt '2026-09-02T09:00:00.7689191Z'
         $componentId = New-InventoryComponentId -EnvironmentId $source.EnvironmentId `
             -ComponentType 5 -SourceId $source.SourceId
         $existing = [pscustomobject] @{
@@ -95,14 +134,14 @@ Describe 'Shared component reconciliation' {
             palp_titel                    = $source.Title
             palp_besitzerobjectid         = 'OWNER-1'
             palp_beschreibung             = $source.Description
-            palp_environment              = [pscustomobject] @{ palp_id = $source.EnvironmentId }
+            palp_environment              = [pscustomobject] @{ palp_adminguid = $source.EnvironmentId; palp_environmentid = '00000000-0000-0000-0000-000000000001' }
             palp_urspruenglicherstelltam  = '2026-09-01T08:00:00.0000000Z'
             palp_urspruenglichgeaendertam = '2026-09-02T11:00:00+02:00'
         }
 
         $plan = New-InventoryComponentReconciliationPlan `
             -SourceComponents @($source) `
-            -Environments @([pscustomobject] @{ palp_id = 'environment-1' }) `
+            -Environments @([pscustomobject] @{ palp_id = 'legacy-environment-1'; palp_adminguid = 'environment-1'; palp_environmentid = '00000000-0000-0000-0000-000000000001' }) `
             -ExistingComponents @($existing) -ComponentType 5 -CreationCap 10
 
         $plan.Writes | Should -HaveCount 0
@@ -119,7 +158,7 @@ Describe 'Shared component reconciliation' {
 
         $plan = New-InventoryComponentReconciliationPlan `
             -SourceComponents $sources `
-            -Environments @([pscustomobject] @{ palp_id = 'environment-1' }) `
+            -Environments @([pscustomobject] @{ palp_id = 'legacy-environment-1'; palp_adminguid = 'environment-1'; palp_environmentid = '00000000-0000-0000-0000-000000000001' }) `
             -ExistingComponents @() -ComponentType 5 -CreationCap 1
 
         $plan.Writes | Should -HaveCount 1
@@ -143,7 +182,7 @@ Describe 'Shared component reconciliation' {
 
         $plan = New-InventoryComponentReconciliationPlan `
             -SourceComponents @($source) `
-            -Environments @([pscustomobject] @{ palp_id = 'environment-1' }) `
+            -Environments @([pscustomobject] @{ palp_id = 'legacy-environment-1'; palp_adminguid = 'environment-1'; palp_environmentid = '00000000-0000-0000-0000-000000000001' }) `
             -ExistingComponents @($otherTypeRow) -ComponentType 5 -CreationCap 10
 
         $plan.Counts.Created | Should -Be 1

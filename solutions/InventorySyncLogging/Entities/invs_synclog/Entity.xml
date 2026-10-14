@@ -20,14 +20,16 @@
         </attribute>
         <attribute PhysicalName="invs_Name">
           <Type>nvarchar</Type><Name>invs_name</Name><LogicalName>invs_name</LogicalName>
-          <RequiredLevel>none</RequiredLevel><MaxLength>200</MaxLength><Format>text</Format>
+          <RequiredLevel>none</RequiredLevel>
+          <DisplayMask>PrimaryName|ValidForAdvancedFind|ValidForForm|ValidForGrid</DisplayMask>
+          <MaxLength>200</MaxLength><Format>text</Format>
           <IsCustomField>1</IsCustomField>
           <displaynames><displayname description="Name" languagecode="1033" /></displaynames>
         </attribute>
         <attribute PhysicalName="invs_SyncRunId">
           <Type>lookup</Type><Name>invs_syncrunid</Name><LogicalName>invs_syncrunid</LogicalName>
           <RequiredLevel>applicationrequired</RequiredLevel><LookupStyle>single</LookupStyle>
-          <LookupTypes><LookupType id="invs_syncrun">invs_syncrun</LookupType></LookupTypes>
+          <LookupTypes />
           <IsCustomField>1</IsCustomField>
           <displaynames><displayname description="Sync Run" languagecode="1033" /></displaynames>
         </attribute>

@@ -11,6 +11,7 @@ Describe 'Shared Dataverse logging writers' {
                 Uri = [string] $Uri
                 Method = $Method
                 Body = $Body
+                Authorization = $Headers.Authorization
             }
             [pscustomobject] @{ StatusCode = 204; Headers = @{}; Body = $null }
         }
@@ -21,6 +22,7 @@ Describe 'Shared Dataverse logging writers' {
             -StartedOn ([datetimeoffset] '2026-10-02T10:00:00Z')
 
         $result.Persisted | Should -BeTrue
+        $script:request.Authorization | Should -Be ('Bearer ' + 'target-token')
         $result.RecordId | Should -Match '^[0-9a-f-]{36}$'
         $script:request.Uri | Should -Be 'https://example.crm.dynamics.com/api/data/v9.2/custom_runs'
         $script:request.Method | Should -Be 'POST'
@@ -91,7 +93,7 @@ Describe 'Shared Dataverse logging writers' {
         $result.Persisted | Should -BeTrue
         $script:request.Uri | Should -Be 'https://example.crm.dynamics.com/api/data/v9.2/custom_logs'
         $script:request.Method | Should -Be 'POST'
-        $script:request.Body.'invs_syncrunid@odata.bind' |
+        $script:request.Body.'invs_syncrun_synclogs@odata.bind' |
             Should -Be '/custom_runs(11111111-1111-1111-1111-111111111111)'
         $script:request.Body.invs_severity | Should -Be 100000000
         $script:request.Body.invs_category | Should -Be 100000009
@@ -163,7 +165,7 @@ Describe 'Agent sync logging lifecycle' {
             if ($uriText -match '/palp_environments\?') {
                 return [pscustomobject] @{
                     Body = [pscustomobject] @{
-                        value = @([pscustomobject] @{ palp_id = 'environment-1' })
+                        value = @([pscustomobject] @{ palp_id = 'legacy-environment-1'; palp_adminguid = 'environment-1'; palp_environmentid = '00000000-0000-0000-0000-000000000001' })
                     }
                 }
 
@@ -250,7 +252,7 @@ Describe 'Agent sync logging lifecycle' {
             if ($uriText -match '/palp_environments\?') {
                 return [pscustomobject] @{
                     Body = [pscustomobject] @{
-                        value = @([pscustomobject] @{ palp_id = 'environment-1' })
+                        value = @([pscustomobject] @{ palp_id = 'legacy-environment-1'; palp_adminguid = 'environment-1'; palp_environmentid = '00000000-0000-0000-0000-000000000001' })
                     }
                 }
             }
@@ -359,7 +361,7 @@ Describe 'Agent sync logging lifecycle' {
             if ($uriText -match '/palp_environments\?') {
                 return [pscustomobject] @{
                     Body = [pscustomobject] @{
-                        value = @([pscustomobject] @{ palp_id = 'environment-1' })
+                        value = @([pscustomobject] @{ palp_id = 'legacy-environment-1'; palp_adminguid = 'environment-1'; palp_environmentid = '00000000-0000-0000-0000-000000000001' })
                     }
                 }
             }

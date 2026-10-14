@@ -59,6 +59,13 @@ deletion check considers only environments read successfully in that run, reads 
 IDs once per candidate environment, compares their deterministic target keys, and restores
 previously deleted flows that reappear.
 
+Both syncs match source environment IDs against **Admin GUID**
+(`palp_environment.palp_adminguid`) and bind component lookups using the matched
+Dataverse row ID (`palp_environmentid`). Keep full IDs, including the
+`Default-<tenant-id>` prefix. The Environment table's `palp_id` is not used for
+matching or binding. Missing mappings are skipped and logged; duplicate Admin GUIDs
+fail the run before component writes.
+
 Each Agent run reads the existing type-5 component rows once, then creates missing rows, patches
 only changed technical fields, and sends no write for unchanged rows. Governance fields are set
 when a component is created, restored, or confirmed deleted. After a complete collect/write phase,

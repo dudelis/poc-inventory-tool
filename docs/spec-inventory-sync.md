@@ -138,7 +138,7 @@ Rows written by legacy processes (all other component types) are never read, cha
 
 - Type column `palp_typ` uses the global option set Komponententyp: **DesktopFlow = 4**, **AgentBuilderAgent = 5**. All queries, writes, and deletion checks are scoped to these values.
 - **Unique key**: the existing non-customizable alternate key on `palp_id` (text, 36 characters). The strategy for its value is **TBD** and encapsulated in one function. The default is a deterministic name-based GUID derived from environment ID, component type, and source component ID. This keeps rows unique per environment, because solution-deployed desktop flows keep the same ID across environments. The final choice follows the customer's test data showing how legacy processes fill `palp_id`.
-- The **environment lookup** is bound through the Environment table's alternate key on `palp_id` (the environment GUID).
+- The **environment lookup** matches the full Power Platform environment ID against Admin GUID (`palp_adminguid`), case-insensitively, then binds the matched Environment row by `palp_environmentid`. Its case-sensitive Web API navigation property is `palp_Environment`, so writes use `palp_Environment@odata.bind`. The Environment table's 36-character `palp_id` is not used: Default IDs have 44 characters. Admin GUID must identify exactly one row; no new alternate key or schema change is required.
 - **Field ownership**:
 
   | Field | Set on create | Updated by sync | Set on delete | Set on restore |
@@ -152,7 +152,7 @@ Rows written by legacy processes (all other component types) are never read, cha
   | `palp_urspruenglicherstelltam` | yes | when changed | – | – |
   | `palp_urspruenglichgeaendertam` | yes | when changed | – | – |
   | `palp_komponentenstatus` | Neu (0) | never | Geloescht (7) | Neu (0) |
-  | `palp_status` | Aktiv (0) | never | Inaktiv (1) | Aktiv (0) |
+  | `palp_status` | Aktiv (`false`) | never | Inaktiv (`true`) | Aktiv (`false`) |
   | `palp_nutzungsbereich` | Undefiniert (0) | never | – | – |
   | `palp_letztestatusaenderung` | now | never | now | now |
   | all other columns | – | never | – | – |
@@ -168,6 +168,15 @@ Rows written by legacy processes (all other component types) are never read, cha
   | `palp_urspruenglicherstelltam` | created on | created at |
   | `palp_urspruenglichgeaendertam` | modified on | last modified at |
 
+- `palp_status` is a Boolean column, not a choice; Web API payloads use JSON `false`/`true`.
+  Source timestamps remain ISO 8601 strings during JSON parsing to preserve their
+  timezone and avoid locale-formatted date values in writes.
+  Compare source and stored timestamps at whole-second precision because Dataverse
+  drops fractional seconds; this prevents unchanged runs from repeatedly updating dates.
+  When a source modification timestamp is absent, use the source creation timestamp
+  and log a `Config` warning identifying the component and the fallback. This does
+  not count as a failed environment. If no valid creation timestamp is available
+  either, fail reconciliation before component writes instead of sending an invalid date.
 - **No schema changes** to `palp_komponente` or `palp_environment` are required by this design.
 
 ### Deletion detection

@@ -39,7 +39,7 @@ function Get-InventoryDeletionCandidates {
             continue
         }
         if ($PSBoundParameters.ContainsKey('IncludedEnvironmentIds')) {
-            $environmentId = [string] $existing.palp_environment.palp_id
+            $environmentId = ([string] $existing.palp_environment.palp_adminguid).Trim()
             if (-not $includedEnvironments.Contains($environmentId)) {
                 continue
             }
@@ -58,7 +58,7 @@ function Get-MissingAgentCandidateIds {
     )
 
     foreach ($environmentGroup in @($Candidates | Group-Object {
-                [string] $_.palp_environment.palp_id
+                ([string] $_.palp_environment.palp_adminguid).Trim()
             })) {
         $environmentId = [string] $environmentGroup.Name
         if ([string]::IsNullOrWhiteSpace($environmentId)) {
@@ -113,7 +113,7 @@ function New-InventoryDeletionWrites {
         $environmentId = ''
         $environmentProperty = $candidate.PSObject.Properties['palp_environment']
         if ($null -ne $environmentProperty -and $null -ne $environmentProperty.Value) {
-            $environmentId = [string] $environmentProperty.Value.palp_id
+            $environmentId = ([string] $environmentProperty.Value.palp_adminguid).Trim()
         }
         $escapedComponentId = $componentId.Replace("'", "''")
         [pscustomobject] @{
@@ -121,7 +121,7 @@ function New-InventoryDeletionWrites {
             RelativeUri   = "palp_komponentes(palp_id='$escapedComponentId')"
             Payload       = [pscustomobject] [ordered] @{
                 palp_komponentenstatus     = 7
-                palp_status                = 1
+                palp_status                = $true
                 palp_letztestatusaenderung = $Now.ToString('o')
             }
             EnvironmentId = $environmentId
@@ -174,10 +174,10 @@ function Get-MissingRpaCandidateIds {
 
     $environmentsById = @{}
     foreach ($environment in $Environments) {
-        $environmentsById[[string] $environment.palp_id] = $environment
+        $environmentsById[([string] $environment.palp_adminguid).Trim()] = $environment
     }
     foreach ($environmentGroup in @($Candidates | Group-Object {
-                [string] $_.palp_environment.palp_id
+                ([string] $_.palp_environment.palp_adminguid).Trim()
             })) {
         $environmentId = [string] $environmentGroup.Name
         if (-not $environmentsById.ContainsKey($environmentId)) {

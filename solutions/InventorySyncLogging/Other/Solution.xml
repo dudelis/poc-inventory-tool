@@ -28,7 +28,6 @@
     <RootComponents>
       <RootComponent type="1" schemaName="invs_syncrun" behavior="0" />
       <RootComponent type="1" schemaName="invs_synclog" behavior="0" />
-      <RootComponent type="10" schemaName="invs_syncrun_synclogs" behavior="0" />
     </RootComponents>
     <MissingDependencies />
   </SolutionManifest>
