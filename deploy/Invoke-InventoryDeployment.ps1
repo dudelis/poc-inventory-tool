@@ -89,6 +89,18 @@ param(
 
     [scriptblock] $GraphRunner,
 
+    [scriptblock] $DataverseRunner = {
+        param([uri] $Uri, [string] $AccessToken)
+        $response = Invoke-RestMethod -Method Get -Uri $Uri -Headers @{
+            Authorization = "Bearer $AccessToken"
+            Accept = 'application/json'
+        } -ErrorAction Stop
+        @{
+            LogicalName = [string] $response.LogicalName
+            EntitySetName = [string] $response.EntitySetName
+        }
+    },
+
     [scriptblock] $Clock = { [datetimeoffset]::UtcNow }
 )
 
@@ -1392,7 +1404,7 @@ if ($Mode -in @('DeployFunctions', 'DeployPowerPlatform')) {
         )
         foreach ($roleScope in $roleScopes) {
             $assignments = Invoke-AzureJson -Arguments (@(
-                'role', 'assignment', 'list', '--scope', $roleScope.Id, '--all'
+                'role', 'assignment', 'list', '--scope', $roleScope.Id
             ) + $scope) -Phase $phase -Remediation $functionRemediation -SanitizeOutput
             if ($assignments -isnot [array] -or @($assignments | Where-Object {
                 $_ -isnot [System.Collections.IDictionary] -or -not $_.Contains('principalId') -or
@@ -1442,12 +1454,28 @@ if ($Mode -in @('DeployFunctions', 'DeployPowerPlatform')) {
         $references = Invoke-AzureJson -Arguments (@(
             'rest', '--method', 'get', '--url', "https://management.azure.com$appId/config/configreferences/appsettings?api-version=2024-04-01"
         ) + $scope) -Phase $phase -Remediation $functionRemediation -SanitizeOutput
-        if ($references -isnot [System.Collections.IDictionary] -or -not $references.Contains('properties') -or
-            $references.properties -isnot [System.Collections.IDictionary] -or
-            -not $references.properties.Contains('INVENTORY_CLIENT_SECRET') -or
-            $references.properties.INVENTORY_CLIENT_SECRET -isnot [System.Collections.IDictionary] -or
-            -not $references.properties.INVENTORY_CLIENT_SECRET.Contains('status') -or
-            $references.properties.INVENTORY_CLIENT_SECRET.status -ne 'Resolved') {
+        $secretReferenceStatus = $null
+        if ($references -is [System.Collections.IDictionary] -and
+            $references.Contains('properties') -and
+            $references.properties -is [System.Collections.IDictionary] -and
+            $references.properties.Contains('INVENTORY_CLIENT_SECRET') -and
+            $references.properties.INVENTORY_CLIENT_SECRET -is [System.Collections.IDictionary] -and
+            $references.properties.INVENTORY_CLIENT_SECRET.Contains('status')) {
+            $secretReferenceStatus = $references.properties.INVENTORY_CLIENT_SECRET.status
+        }
+        elseif ($references -is [System.Collections.IDictionary] -and
+            $references.Contains('value') -and $references.value -is [array]) {
+            $secretReferences = @($references.value | Where-Object {
+                $_ -is [System.Collections.IDictionary] -and
+                $_.Contains('name') -and $_.name -ceq 'INVENTORY_CLIENT_SECRET' -and
+                $_.Contains('properties') -and $_.properties -is [System.Collections.IDictionary] -and
+                $_.properties.Contains('status')
+            })
+            if ($secretReferences.Count -eq 1) {
+                $secretReferenceStatus = $secretReferences[0].properties.status
+            }
+        }
+        if ($secretReferenceStatus -ne 'Resolved') {
             throw 'Function deployment: Key Vault reference is not Resolved. Wait for RBAC propagation, verify vault access and the active secret, then rerun DeployFunctions; no code was published.'
         }
 
@@ -1456,6 +1484,7 @@ if ($Mode -in @('DeployFunctions', 'DeployPowerPlatform')) {
             try {
                 Invoke-ValidationCommand -Command func -Arguments @(
                     'azure', 'functionapp', 'publish', $names.functionApp,
+                    '--powershell',
                     '--subscription', $configuration.subscriptionId
                 ) -Phase $phase -Remediation 'Publication failed. Keep timers disabled, inspect Core Tools and OneDeploy diagnostics without sharing credentials, and rerun DeployFunctions; earlier phases will be revalidated.' `
                     -SanitizeOutput | Out-Null
@@ -1520,6 +1549,7 @@ if ($Mode -eq 'DeployPowerPlatform') {
     Save-DeploymentState -State $state -Path $resolvedStatePath
     $solutionSource = Join-Path (Split-Path -Parent $PSScriptRoot) 'solutions\InventorySyncLogging'
     $solutionArtifact = Join-Path ([IO.Path]::GetTempPath()) "InventorySyncLogging-$([guid]::NewGuid()).zip"
+    $accessToken = $null
     try {
         Invoke-ValidationCommand -Command pac -Arguments @(
             'auth', 'create', '--environment', $configuration.targetDataverseUrl
@@ -1588,6 +1618,13 @@ if ($Mode -eq 'DeployPowerPlatform') {
         if ($loggingSolution.Count -ne 1 -or $loggingSolution[0].IsManaged -ne $false) {
             throw 'Logging solution: the expected unmanaged InventorySyncLogging solution was not found after import. Inspect solution history and retry.'
         }
+        $accessToken = (Invoke-ValidationCommand -Command pac -Arguments @(
+            'auth', 'token'
+        ) -Phase $phase -SanitizeOutput `
+            -Remediation 'A Dataverse metadata token could not be acquired from the interactive Power Platform profile. Sign in again and retry.').Trim()
+        if (-not $accessToken -or $accessToken -match '\s') {
+            throw 'Logging solution: Power Platform CLI returned an invalid Dataverse metadata token. Sign in again and retry.'
+        }
         $tableDefinitions = @(
             @{
                 LogicalName = 'invs_syncrun'; PrimaryId = 'invs_syncrunid'
@@ -1614,13 +1651,28 @@ if ($Mode -eq 'DeployPowerPlatform') {
             $fetchXml = "<fetch top='1'><entity name='$($table.LogicalName)'><attribute name='$($table.PrimaryId)' /></entity></fetch>"
             Invoke-ValidationCommand -Command pac -Arguments @(
                 'env', 'fetch', '--environment', $configuration.targetDataverseUrl,
-                '--xml', $fetchXml, '--json'
+                '--xml', $fetchXml
             ) -Phase $phase -SanitizeOutput `
                 -Remediation "The $($table.LogicalName) table or configured $($table.EntitySet) entity set is unavailable. Publish the solution and verify the configured entity-set name before retrying." |
                 Out-Null
+            $metadataUri = "$($configuration.targetDataverseUrl.TrimEnd('/'))/api/data/v9.2/EntityDefinitions(LogicalName='$($table.LogicalName)')?`$select=LogicalName,EntitySetName"
+            $deployedMetadata = Invoke-SensitiveAdapter -Adapter $DataverseRunner `
+                -AdapterArguments @($metadataUri, $accessToken) `
+                -FailureMessage "Logging solution: Dataverse metadata request for $($table.LogicalName) failed. Verify target-environment access and retry."
+            if ($deployedMetadata -isnot [System.Collections.IDictionary] -or
+                -not $deployedMetadata.Contains('LogicalName') -or
+                -not $deployedMetadata.Contains('EntitySetName') -or
+                $deployedMetadata.LogicalName -cne $table.LogicalName -or
+                [string]::IsNullOrWhiteSpace([string] $deployedMetadata.EntitySetName)) {
+                throw "Logging solution: Dataverse returned invalid metadata for $($table.LogicalName). Verify the published table and retry."
+            }
+            if ($deployedMetadata.EntitySetName -cne $table.EntitySet) {
+                throw "Logging solution: deployed entity set mismatch for $($table.LogicalName): configuration expects '$($table.EntitySet)' but the target reports '$($deployedMetadata.EntitySetName)'."
+            }
         }
     }
     finally {
+        $accessToken = $null
         if (Test-Path -LiteralPath $solutionArtifact) {
             Remove-Item -LiteralPath $solutionArtifact -Force
         }

@@ -259,7 +259,8 @@ untagged, ambiguous, or incompatible app/hosting-plan resources are refused, not
 adopted or migrated. After infrastructure succeeds, live checks verify the app/plan,
 runtime/scale/security properties, exact role scopes/principal, sanitized settings,
 and `Resolved` Key Vault reference status. Only then does Core Tools publish from
-the repository's `src` directory. Local settings files are excluded by
+the repository's `src` directory with `--powershell`, so language detection does not
+require a local settings file. Local settings files are excluded by
 [.funcignore](../src/.funcignore); the bootstrap never publishes local app settings
 or requests function keys. Raw deployment/publication/settings diagnostics are
 suppressed because they can contain credentials.
@@ -307,8 +308,10 @@ uses `pac env who` to reject a context targeting another environment. It packs
 `solutions/InventorySyncLogging` into a unique temporary archive on every run,
 imports the unmanaged archive into the explicit target URL, publishes
 customizations, verifies the installed unmanaged solution, and queries both logging
-tables. The configured Sync Run and Sync Log entity-set names must match the unpacked
-solution metadata. The temporary archive is removed whether packing, import,
+tables. It uses a short-lived token from the interactive CLI profile to compare the
+deployed Dataverse `EntitySetName` metadata with the configured Sync Run and Sync Log
+names and the unpacked solution metadata. The token is neither returned nor persisted.
+The temporary archive is removed whether packing, import,
 publication, or verification succeeds or fails; the committed root archive is never
 used by this mode.
 
