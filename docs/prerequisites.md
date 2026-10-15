@@ -4,6 +4,12 @@ Everything that must exist before the inventory sync Function App is deployed an
 configured. Work through it top to bottom; the [operations guide](operations-guide.md)
 covers deployment, app-setting details, and the smoke run that come afterwards.
 
+For a new installation, the [portable deployment package](../deploy/README.md)
+can provision a dedicated Azure foundation after an interactive tenant/subscription
+login. It does not yet create the runtime identity or Function App. Its deterministic
+names and ownership tags are separate from the existing manual setup below; do not
+use the screenshot-specific storage/vault names for an automated installation.
+
 ## Overview
 
 | Section | What | Where | Who can do it |

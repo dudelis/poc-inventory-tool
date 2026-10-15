@@ -4,8 +4,10 @@ param(
     [Parameter(Mandatory)]
     [string] $ConfigurationPath,
 
-    [ValidateSet('Plan')]
+    [ValidateSet('Plan', 'DeployFoundation')]
     [string] $Mode = 'Plan',
+
+    [string] $TenantId,
 
     [string] $StatePath,
 
@@ -21,15 +23,42 @@ $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
 function Invoke-ValidationCommand {
-    param([string[]] $Arguments, [string] $Remediation)
+    param([string[]] $Arguments, [string] $Remediation, [string] $Phase = 'Preflight')
     $result = & $CommandRunner 'az' $Arguments
     if ($null -eq $result -or -not $result.Contains('ExitCode') -or -not $result.Contains('Output')) {
-        throw 'Preflight: command runner must return ExitCode and Output.'
+        throw "${Phase}: command runner must return ExitCode and Output."
     }
     if ($result.ExitCode -ne 0) {
-        throw "Preflight: az $($Arguments -join ' ') failed. $Remediation`n$($result.Output)"
+        throw "${Phase}: az $($Arguments -join ' ') failed. $Remediation`n$($result.Output)"
     }
     return [string] $result.Output
+}
+
+function Invoke-AzureJson {
+    param([string[]] $Arguments, [string] $Phase, [string] $Remediation)
+    $output = Invoke-ValidationCommand -Arguments $Arguments -Phase $Phase -Remediation $Remediation
+    try {
+        return ConvertFrom-Json -InputObject $output -AsHashtable -NoEnumerate
+    }
+    catch {
+        throw "${Phase}: az $($Arguments -join ' ') returned invalid JSON. $Remediation"
+    }
+}
+
+function Assert-FoundationProperties {
+    param([System.Collections.IDictionary] $Resource, [System.Collections.IDictionary] $Expected)
+    foreach ($path in $Expected.Keys) {
+        $actual = $Resource
+        foreach ($segment in $path -split '\.') {
+            if ($actual -isnot [System.Collections.IDictionary] -or -not $actual.Contains($segment)) {
+                throw "Azure foundation: resource validation failed for '$path'. Inspect the resource and the deployment before retrying."
+            }
+            $actual = $actual[$segment]
+        }
+        if ($actual -ne $Expected[$path]) {
+            throw "Azure foundation: incompatible resource '$($Resource.name)': '$path' differs from the deployment contract. Resolve the conflict before retrying."
+        }
+    }
 }
 
 if (-not (Test-Path -LiteralPath $ConfigurationPath -PathType Leaf)) {
@@ -207,6 +236,32 @@ $names = [ordered] @{
     appRegistration = $stem
     deploymentContainer = 'inventory-sync-deploy'
 }
+$azureContext = $null
+if ($Mode -eq 'DeployFoundation') {
+    if ($TenantId -notmatch '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$' -or
+        [guid] $TenantId -eq [guid]::Empty -or [guid] $configuration.subscriptionId -eq [guid]::Empty) {
+        throw 'Preflight: DeployFoundation requires a non-zero -TenantId GUID and subscriptionId.'
+    }
+    $azureContext = Invoke-AzureJson -Arguments @('account', 'show', '--output', 'json') -Phase 'Preflight' `
+        -Remediation 'Sign in interactively with az login --tenant <tenant-id>, then select the configured subscription with az account set.'
+    if ($azureContext -isnot [System.Collections.IDictionary] -or
+        -not $azureContext.Contains('id') -or -not $azureContext.Contains('tenantId') -or
+        -not $azureContext.Contains('state') -or -not $azureContext.Contains('user') -or
+        $azureContext.user -isnot [System.Collections.IDictionary] -or
+        -not $azureContext.user.Contains('type') -or -not $azureContext.user.Contains('name')) {
+        throw 'Preflight: invalid account response. Verify Azure CLI and run az login --tenant <tenant-id> before retrying.'
+    }
+    if ($azureContext.id -ne $configuration.subscriptionId) {
+        throw 'Preflight: active subscription mismatch. Select the configured subscription with az account set --subscription <subscription-id>.'
+    }
+    if ($azureContext.tenantId -ne $TenantId) {
+        throw 'Preflight: active tenant mismatch. Sign in with az login --tenant <tenant-id> and select the configured subscription.'
+    }
+    if ($azureContext.state -ne 'Enabled' -or $azureContext.user.type -ne 'user') {
+        throw 'Preflight: an enabled subscription and an interactively authenticated user are required. Run az login --tenant <tenant-id>.'
+    }
+    Write-Information "Azure context: tenant $($azureContext.tenantId), subscription $($azureContext.id), operator $($azureContext.user.name)." -InformationAction Continue
+}
 $settings = [ordered] @{
     FUNCTIONS_EXTENSION_VERSION = '~4'
     FUNCTIONS_WORKER_RUNTIME = 'powershell'
@@ -296,12 +351,193 @@ for ($index = 0; $index -lt $phases.Count; $index++) {
     $phases[$index].NeedsRevalidation = $state.phases[$index].status -eq 'Completed'
 }
 
+$cloudChangesMade = $false
+if ($Mode -eq 'DeployFoundation') {
+    $remediation = 'Inspect Azure Policy, resource providers, quota, deployment errors, and operator permissions. Fix the reported cause and rerun DeployFoundation; later phases have not run.'
+    $scope = @('--subscription', $configuration.subscriptionId, '--output', 'json')
+    $groupExists = Invoke-AzureJson -Arguments (@('group', 'exists', '--name', $names.resourceGroup) + $scope) `
+        -Phase 'Azure foundation' -Remediation $remediation
+    if ($groupExists -isnot [bool]) {
+        throw 'Azure foundation: group exists must return a Boolean; no cloud changes were made.'
+    }
+    $existingResources = @()
+    if ($groupExists) {
+        $existingGroup = Invoke-AzureJson -Arguments (@('group', 'show', '--name', $names.resourceGroup) + $scope) `
+            -Phase 'Azure foundation' -Remediation $remediation
+        Assert-FoundationProperties -Resource $existingGroup -Expected @{
+            name = $names.resourceGroup; location = $configuration.location
+            'tags.inventory-sync-installation' = $suffix; 'tags.inventory-sync-workload' = $stem
+        }
+        $existingResources = Invoke-AzureJson -Arguments (@(
+            'resource', 'list', '--resource-group', $names.resourceGroup
+        ) + $scope) -Phase 'Azure foundation' -Remediation $remediation
+        if ($existingResources -isnot [array]) {
+            throw 'Azure foundation: resource list must return an array; no cloud changes were made.'
+        }
+        $foundationNames = @{
+            'Microsoft.Storage/storageAccounts' = $names.storage
+            'Microsoft.KeyVault/vaults' = $names.keyVault
+            'Microsoft.OperationalInsights/workspaces' = $names.logAnalytics
+            'Microsoft.Insights/components' = $names.applicationInsights
+        }
+        foreach ($existingResource in $existingResources) {
+            if ($existingResource.type -notin $foundationNames.Keys -and
+                $existingResource.name -notin $foundationNames.Values) { continue }
+            if (-not $foundationNames.Contains($existingResource.type) -or
+                $existingResource.name -ne $foundationNames[$existingResource.type]) {
+                throw 'Azure foundation: ambiguous resource name or type in the dedicated group. Resolve the conflict before retrying; no cloud changes were made.'
+            }
+            $id = "/subscriptions/$($configuration.subscriptionId)/resourceGroups/$($names.resourceGroup)/providers/$($existingResource.type)/$($existingResource.name)"
+            Assert-FoundationProperties -Resource $existingResource -Expected @{
+                id = $id; location = $configuration.location
+                'tags.inventory-sync-installation' = $suffix; 'tags.inventory-sync-workload' = $stem
+            }
+            $details = Invoke-AzureJson -Arguments (@('resource', 'show', '--ids', $id) + $scope) `
+                -Phase 'Azure foundation' -Remediation $remediation
+            $compatibleProperties = switch ($existingResource.type) {
+                'Microsoft.Storage/storageAccounts' { @{
+                    kind = 'StorageV2'; 'sku.name' = 'Standard_LRS'
+                } }
+                'Microsoft.KeyVault/vaults' { @{
+                    'properties.tenantId' = $TenantId; 'properties.enableRbacAuthorization' = $true
+                    'properties.softDeleteRetentionInDays' = 90
+                } }
+                'Microsoft.Insights/components' { @{
+                    'properties.WorkspaceResourceId' = "/subscriptions/$($configuration.subscriptionId)/resourceGroups/$($names.resourceGroup)/providers/Microsoft.OperationalInsights/workspaces/$($names.logAnalytics)"
+                } }
+                default { @{} }
+            }
+            Assert-FoundationProperties -Resource $details -Expected $compatibleProperties
+        }
+    }
+    foreach ($resourceName in @($names.storage, $names.keyVault)) {
+        if (@($existingResources | Where-Object name -eq $resourceName).Count -gt 0) { continue }
+        if ($resourceName -eq $names.storage) {
+            $availability = Invoke-AzureJson -Arguments (@(
+                'storage', 'account', 'check-name', '--name', $resourceName
+            ) + $scope) -Phase 'Azure foundation' -Remediation $remediation
+        }
+        else {
+            $requestPath = Join-Path ([IO.Path]::GetTempPath()) "inventory-vault-name-$([guid]::NewGuid()).json"
+            try {
+                @{ name = $resourceName; type = 'Microsoft.KeyVault/vaults' } |
+                    ConvertTo-Json -Compress | Set-Content -LiteralPath $requestPath -Encoding utf8
+                $availability = Invoke-AzureJson -Arguments (@(
+                    'rest', '--method', 'post', '--url',
+                    "/subscriptions/$($configuration.subscriptionId)/providers/Microsoft.KeyVault/checkNameAvailability?api-version=2024-11-01",
+                    '--body', "@$requestPath"
+                ) + $scope) `
+                -Phase 'Azure foundation' -Remediation $remediation
+            }
+            finally {
+                if (Test-Path -LiteralPath $requestPath) { Remove-Item -LiteralPath $requestPath }
+            }
+        }
+        if ($availability -isnot [System.Collections.IDictionary] -or
+            -not $availability.Contains('nameAvailable') -or $availability.nameAvailable -isnot [bool]) {
+            throw 'Azure foundation: invalid name availability response; no cloud changes were made. Verify Azure CLI and provider registration before retrying.'
+        }
+        if (-not $availability.nameAvailable) {
+            throw 'Azure foundation: a deterministic global name is unavailable (including a possible soft-deleted vault). Resolve name ownership or use a different workloadName; no cloud changes were made.'
+        }
+    }
+    if (-not $groupExists) {
+        $groupDeployment = Invoke-AzureJson -Arguments (@(
+            'deployment', 'sub', 'create', '--name', "inventory-group-$suffix",
+            '--location', $configuration.location,
+            '--template-file', (Join-Path $PSScriptRoot 'foundation-group.bicep'),
+            '--parameters', "resourceGroupName=$($names.resourceGroup)",
+            "location=$($configuration.location)", "installationId=$suffix", "workloadName=$stem"
+        ) + $scope) -Phase 'Azure foundation' -Remediation $remediation
+        $cloudChangesMade = $true
+        if ($groupDeployment.properties.provisioningState -ne 'Succeeded') {
+            throw "Azure foundation: resource group deployment did not reach Succeeded. $remediation"
+        }
+    }
+    $deploymentArguments = @(
+        '--resource-group', $names.resourceGroup, '--name', "inventory-foundation-$suffix",
+        '--template-file', (Join-Path $PSScriptRoot 'foundation.bicep'),
+        '--mode', 'Incremental', '--parameters',
+        "tenantId=$TenantId", "storageName=$($names.storage)", "keyVaultName=$($names.keyVault)",
+        "logAnalyticsName=$($names.logAnalytics)", "applicationInsightsName=$($names.applicationInsights)",
+        "location=$($configuration.location)", "installationId=$suffix", "workloadName=$stem",
+        "logRetentionDays=$($configuration.logRetentionDays)"
+    ) + $scope
+    Invoke-AzureJson -Arguments (@('deployment', 'group', 'validate') + $deploymentArguments) `
+        -Phase 'Azure foundation' -Remediation $remediation | Out-Null
+    $deployment = Invoke-AzureJson -Arguments (@('deployment', 'group', 'create') + $deploymentArguments) `
+        -Phase 'Azure foundation' -Remediation $remediation
+    $cloudChangesMade = $true
+    if ($deployment.properties.provisioningState -ne 'Succeeded') {
+        throw "Azure foundation: deployment did not reach Succeeded. $remediation"
+    }
+    $group = Invoke-AzureJson -Arguments (@('group', 'show', '--name', $names.resourceGroup) + $scope) `
+        -Phase 'Azure foundation' -Remediation $remediation
+    Assert-FoundationProperties -Resource $group -Expected @{
+        name = $names.resourceGroup; location = $configuration.location
+        'tags.inventory-sync-installation' = $suffix; 'tags.inventory-sync-workload' = $stem
+    }
+    $foundationResources = @(
+        @{ Name = $names.storage; Type = 'Microsoft.Storage/storageAccounts'; Properties = @{
+            kind = 'StorageV2'; 'sku.name' = 'Standard_LRS'
+            'properties.allowBlobPublicAccess' = $false; 'properties.supportsHttpsTrafficOnly' = $true
+            'properties.minimumTlsVersion' = 'TLS1_2'; 'properties.publicNetworkAccess' = 'Enabled'
+            'properties.networkAcls.defaultAction' = 'Allow'
+        } }
+        @{ Name = $names.keyVault; Type = 'Microsoft.KeyVault/vaults'; Properties = @{
+            'properties.tenantId' = $TenantId; 'properties.sku.name' = 'standard'
+            'properties.sku.family' = 'A'; 'properties.enableRbacAuthorization' = $true
+            'properties.enableSoftDelete' = $true; 'properties.enablePurgeProtection' = $true
+            'properties.softDeleteRetentionInDays' = 90; 'properties.publicNetworkAccess' = 'Enabled'
+            'properties.networkAcls.defaultAction' = 'Allow'
+        } }
+        @{ Name = $names.logAnalytics; Type = 'Microsoft.OperationalInsights/workspaces'; Properties = @{
+            'properties.sku.name' = 'PerGB2018'; 'properties.retentionInDays' = $configuration.logRetentionDays
+            'properties.publicNetworkAccessForIngestion' = 'Enabled'; 'properties.publicNetworkAccessForQuery' = 'Enabled'
+        } }
+        @{ Name = $names.applicationInsights; Type = 'Microsoft.Insights/components'; Properties = @{
+            kind = 'web'; 'properties.Application_Type' = 'web'
+            'properties.WorkspaceResourceId' = "/subscriptions/$($configuration.subscriptionId)/resourceGroups/$($names.resourceGroup)/providers/Microsoft.OperationalInsights/workspaces/$($names.logAnalytics)"
+            'properties.publicNetworkAccessForIngestion' = 'Enabled'; 'properties.publicNetworkAccessForQuery' = 'Enabled'
+        } }
+    )
+    foreach ($definition in $foundationResources) {
+        $id = "/subscriptions/$($configuration.subscriptionId)/resourceGroups/$($names.resourceGroup)/providers/$($definition.Type)/$($definition.Name)"
+        $resource = Invoke-AzureJson -Arguments (@('resource', 'show', '--ids', $id) + $scope) `
+            -Phase 'Azure foundation' -Remediation $remediation
+        $expected = @{
+            id = $id; name = $definition.Name; type = $definition.Type; location = $configuration.location
+            'tags.inventory-sync-installation' = $suffix; 'tags.inventory-sync-workload' = $stem
+            'properties.provisioningState' = 'Succeeded'
+        }
+        foreach ($key in $definition.Properties.Keys) { $expected[$key] = $definition.Properties[$key] }
+        Assert-FoundationProperties -Resource $resource -Expected $expected
+    }
+    for ($index = 0; $index -lt 2; $index++) {
+        $phases[$index].Status = 'Completed'
+        $phases[$index].NeedsRevalidation = $false
+        $state.phases[$index].status = 'Completed'
+    }
+    if ($StatePath) {
+        $temporaryStatePath = "$resolvedStatePath.$([guid]::NewGuid()).tmp"
+        try {
+            $state | ConvertTo-Json -Depth 5 | Set-Content -LiteralPath $temporaryStatePath -Encoding utf8
+            Move-Item -LiteralPath $temporaryStatePath -Destination $resolvedStatePath -Force
+        }
+        finally {
+            if (Test-Path -LiteralPath $temporaryStatePath) { Remove-Item -LiteralPath $temporaryStatePath }
+        }
+    }
+}
+
 [pscustomobject] @{
     SchemaVersion = 1
     Mode = $Mode
-    Status = 'PlanValidated'
-    CloudChangesMade = $false
+    Status = $(if ($Mode -eq 'DeployFoundation') { 'FoundationValidated' } else { 'PlanValidated' })
+    CloudChangesMade = $cloudChangesMade
     DeploymentImplemented = $false
+    FoundationDeploymentImplemented = $true
+    AzureContext = $azureContext
     DeploymentMode = 'Incremental'
     Configuration = $configuration
     ResourceNames = $names

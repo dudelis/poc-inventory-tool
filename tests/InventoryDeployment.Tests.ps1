@@ -37,7 +37,7 @@ Describe 'Offline inventory deployment contract' {
 
         $plan.Status | Should -Be 'PlanValidated'
         $plan.CloudChangesMade | Should -BeFalse
-        $plan.Compilation | Should -HaveCount 1
+        $plan.Compilation | Should -HaveCount 3
         $plan.Configuration.location | Should -Be 'northeurope'
         $plan.Configuration.instanceMemoryMB | Should -Be 2048
         $plan.Configuration.maximumInstanceCount | Should -Be 20
@@ -64,7 +64,7 @@ Describe 'Offline inventory deployment contract' {
             'function-deployment', 'logging-solution', 'readiness-validation'
         )
         @($plan.Phases | Where-Object Status -ne 'Pending') | Should -HaveCount 0
-        $calls | Should -HaveCount 3
+        $calls | Should -HaveCount 5
         $plan | ConvertTo-Json -Depth 20 | Should -Not -Match 'UseDevelopmentStorage|AccountKey='
     }
 
@@ -259,6 +259,8 @@ Describe 'Offline inventory deployment contract' {
         New-Item -ItemType Directory -Path $modulePath -Force | Out-Null
         Copy-Item -LiteralPath $bootstrapPath -Destination $deploymentPath
         Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\deploy\main.bicep') -Destination $deploymentPath
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\deploy\foundation.bicep') -Destination $deploymentPath
+        Copy-Item -LiteralPath (Join-Path $PSScriptRoot '..\deploy\foundation-group.bicep') -Destination $deploymentPath
         Set-Content -LiteralPath (Join-Path $modulePath 'broken.bicep') -Value 'not valid bicep'
         $statePath = Join-Path $deploymentPath 'state.json'
         $calls = [System.Collections.Generic.List[string]]::new()
@@ -278,7 +280,7 @@ Describe 'Offline inventory deployment contract' {
         { & (Join-Path $deploymentPath 'Invoke-InventoryDeployment.ps1') -ConfigurationPath $examplePath `
                 -StatePath $statePath -CommandRunner $runner } |
             Should -Throw '*Fix the indicated Bicep compilation error*BCP007*'
-        $calls | Should -HaveCount 2
+        $calls | Should -HaveCount 4
         $statePath | Should -Not -Exist
     }
 

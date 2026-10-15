@@ -6,6 +6,11 @@ inventory syncs:
 - `AgentSyncTimer` inventories Agent Builder agents as component type `5`.
 - `RpaSyncTimer` inventories desktop flows as component type `4`.
 
+For a new installation, use the [portable deployment package](../deploy/README.md)
+to plan and provision the dedicated Azure foundation. Runtime identity, Function
+deployment, and Power Platform setup still require the manual steps here. Use the
+bootstrap's reported resource names, not the existing manual installation's names.
+
 Both timers start singleton Durable orchestrations. They use one Entra service principal
 for Azure Resource Graph and Dataverse, and the Function App's managed identity only to
 resolve the service-principal secret from Key Vault.

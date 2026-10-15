@@ -1,6 +1,6 @@
 targetScope = 'subscription'
 
-@description('Planning contract only. This entry point does not provision cloud resources yet.')
+@description('Shared deployment input contract. The bootstrap deploys foundation templates separately.')
 @minLength(36)
 @maxLength(36)
 param subscriptionId string
