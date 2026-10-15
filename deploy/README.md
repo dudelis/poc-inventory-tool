@@ -1,11 +1,14 @@
-# Inventory deployment: planning and Azure foundation
+# Inventory deployment: planning, Azure foundation, and runtime identity
 
 The portable package supports offline planning (#11) and explicit Azure foundation
-deployment (#12). `DeployFoundation` provisions a dedicated resource group, storage,
-Key Vault, Log Analytics, and workspace-based Application Insights. It stops there:
-it **does not sign in, create runtime credentials, deploy a Function App, publish
-Functions, import solutions, assign runtime roles, or enable timers**. The remaining
-bootstrap phases are delivered by subsequent tickets under #10.
+deployment (#12), plus tenant-local runtime identity and credential provisioning
+(#13). `DeployFoundation` provisions a dedicated resource group, storage, Key Vault,
+Log Analytics, and workspace-based Application Insights. `DeployIdentity` also
+authenticates interactively with Microsoft Graph, establishes the managed app and
+service principal, assigns Global Reader, and stores a bounded credential in Key Vault.
+Neither mode deploys a Function App, publishes Functions, imports solutions, or
+enables timers. The remaining bootstrap phases are delivered by subsequent tickets
+under #10.
 
 [main.bicep](./main.bicep) declares the shared input contract and has no resources.
 The bootstrap deploys [foundation-group.bicep](./foundation-group.bicep) at subscription
@@ -117,6 +120,85 @@ partial resources behind after a failed deployment. Resolve the reported cause a
 rerun; do not delete/purge resources as a recovery shortcut. A failed run does not
 record new completion; any previously saved completion remains subject to revalidation.
 
+## Establish the runtime identity
+
+This mode makes live Azure and Microsoft Entra changes. It revalidates and
+incrementally redeploys the foundation first, so retain all foundation permissions.
+Install the reported Microsoft Graph PowerShell modules yourself; the bootstrap
+never installs modules. The operator must be able to create/manage app registrations
+and service principals and assign directory roles (normally a Privileged Role
+Administrator or Global Administrator with the necessary activated privileges).
+Graph requests delegated `Application.ReadWrite.All` and
+`RoleManagement.ReadWrite.Directory`; tenant consent policy may require administrator
+consent. These are operator permissions, not runtime app permissions.
+
+The operator also needs Key Vault data-plane permission to list secret metadata and
+versions and set secrets, such as **Key Vault Secrets Officer**, on the dedicated
+vault. Subscription Contributor alone does not grant this access. Have an authorized
+administrator grant it after `DeployFoundation`; this phase does not assign the
+operator a vault role or grant the runtime service principal secret-read access.
+
+```powershell
+$identity = .\deploy\Invoke-InventoryDeployment.ps1 `
+    -Mode DeployIdentity `
+    -TenantId <tenant-id> `
+    -ConfigurationPath .\deploy\.local\parameters.json `
+    -StatePath .\deploy\.local\deployment.state.json
+
+$identity | Select-Object Status, CloudChangesMade
+$identity.Identity
+$identity.Phases | Format-Table Id, Status, SavedStatus, NeedsRevalidation
+```
+
+An interactive Azure CLI user login is still required. Microsoft Graph prompts
+interactively with process-scoped authentication. Both contexts must match
+`-TenantId` before any cloud mutation or state creation. Never supply an app secret
+as an operator login or put one in the configuration.
+
+The bootstrap creates one single-tenant (`AzureADMyOrg`) app with the planned
+display name and an `InventorySyncInstallation:<suffix>` ownership tag, then one
+service principal for its client ID. It refuses duplicate display-name candidates,
+unowned apps, incompatible account types, duplicate service principals, or identity
+IDs that differ from saved state. It does not adopt the existing manual installation.
+Global Reader is identified by its built-in template ID
+`f2ef992c-3afb-46b9-b7cf-a126ee74c451` and assigned at directory scope `/`.
+The assignment is read back; if it is not visible yet, the command fails resumably
+with non-secret identity/assignment IDs. Wait several minutes and rerun. Assignment
+visibility is not a guarantee that downstream Resource Graph authorization has
+finished propagating; verify that access before enabling the inventory workload.
+Retries validate the saved assignment without posting duplicates. If the saved
+assignment stays missing, have a directory-role administrator inspect and restore it.
+
+The managed secret is `inventory-sync-client-secret`. Existing metadata must match
+the installation and app, have an enabled current secret and exactly one enabled,
+unexpired version, and be unambiguous. Disabled historical versions may remain.
+The bootstrap never reads the stored value and never rotates an existing credential
+implicitly. A disabled, expired, unowned, or ambiguous secret stops the phase instead.
+When no secret exists, it checks for orphaned managed app passwords before creating
+one with a 12-calendar-month expiry. Tenant credential-lifetime policy can reject
+creation; the bootstrap does not silently choose another lifetime.
+
+The generated value is sent directly to the vault in an in-memory HTTPS request,
+not a native command argument or temporary file. Sensitive operations use an isolated
+runspace so their diagnostics cannot enter the calling transcript. The command
+returns only identity IDs, credential key ID where known, expiry, and secret version;
+the local state retains the same non-secret operational/recovery metadata.
+
+**Recovery after credential creation:** if the Key Vault write fails, the command
+throws and leaves `PendingKeyVaultWrite` with the key ID and expiry. First inspect
+the vault metadata: a network failure can occur after the server accepted a write.
+If the managed version exists, rerun to validate it. If it does not, remove the
+orphaned app password by the recorded key ID, then set only `identity.credential`
+to `null` in the state file and rerun. Never clear the state and blindly retry.
+Even without local state, an existing managed app password blocks duplicate creation
+and its non-secret metadata is recorded for recovery. If password creation itself
+has an unknown outcome, inspect the app's credential metadata before retrying.
+
+`IdentityValidated` marks preflight, foundation, identity, and credential phases
+complete. Function deployment and all later phases remain pending. The returned
+app settings resolve tenant/client IDs but keep the versionless Key Vault reference;
+no Function settings are applied by this mode.
+
 ## Installation configuration
 
 For a local configuration, copy the example to an ignored directory:
@@ -183,28 +265,36 @@ Existing state is strictly validated. Unknown fields, unknown statuses, unexpect
 phase order, and a configuration mismatch fail without rewriting the file. Use a
 separate state file when deliberately changing configuration. Do not manually
 mark phases complete to bypass checks. Secrets, tokens, Dataverse URLs, and
-identity objects do not belong in state.
+full identity objects do not belong in state. `DeployIdentity` additionally retains
+strictly allowlisted identity IDs and non-secret credential expiry/version/recovery
+metadata; it never stores a credential value.
 
 The ordered workflow is preflight, Azure foundation, runtime identity,
 runtime credential, Function deployment, logging solution, and readiness
 validation. Dependencies are included in the plan. `DeployFoundation` executes
-only the first two phases; the remaining cloud phases are not yet implemented.
+only the first two phases; `DeployIdentity` executes the first four. Function
+deployment, logging import, and readiness validation are not yet implemented.
 
 ## Tests and command boundary
 
 ```powershell
 Invoke-Pester -Path .\tests\InventoryDeployment.Tests.ps1,`
-    .\tests\InventoryDeployment.Foundation.Tests.ps1 -Output Detailed -CI
+    .\tests\InventoryDeployment.Foundation.Tests.ps1,`
+    .\tests\InventoryDeployment.Identity.Tests.ps1 -Output Detailed -CI
 ```
 
 Tests use the public bootstrap command. Real Bicep compilation validates the
 contract; an optional `-CommandRunner` script block replaces only the external
 process boundary for deterministic failure-path tests. It receives a command
-name and argument array and returns a dictionary containing `ExitCode` and
-`Output`. Do not use this test adapter to bypass compiler validation in normal
-operation.
+name, argument array, and optional sensitive-input dictionary and returns a
+dictionary containing `ExitCode` and `Output`. The default sensitive write uses
+HTTPS rather than invoking the nominal `az keyvault secret set` command.
+`-GraphRunner` replaces only Microsoft Graph operations; `-Clock` supplies the
+credential clock. Sensitive adapters run in an isolated runspace and should capture
+any required fake state in a closure. Tests never contact Azure or Graph.
+Do not use test adapters to bypass validation in normal operation.
 
-The bootstrap returns one plan/foundation result object or raises a terminating error. Native
+The bootstrap returns one plan/foundation/identity result object or raises a terminating error. Native
 compiler errors are reported with their phase and remediation; later phases
 never run after failure. When invoked using `pwsh -File`, a terminating error
 returns a nonzero process exit code.

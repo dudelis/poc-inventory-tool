@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory)]
     [string] $ConfigurationPath,
 
-    [ValidateSet('Plan', 'DeployFoundation')]
+    [ValidateSet('Plan', 'DeployFoundation', 'DeployIdentity')]
     [string] $Mode = 'Plan',
 
     [string] $TenantId,
@@ -12,31 +12,173 @@ param(
     [string] $StatePath,
 
     [scriptblock] $CommandRunner = {
-        param([string] $Command, [string[]] $Arguments)
+        param(
+            [string] $Command,
+            [string[]] $Arguments,
+            [System.Collections.IDictionary] $SensitiveArguments
+        )
+        if ($SensitiveArguments -and $SensitiveArguments.Contains('Value')) {
+            $subscription = $Arguments[[array]::IndexOf($Arguments, '--subscription') + 1]
+            $vault = $Arguments[[array]::IndexOf($Arguments, '--vault-name') + 1]
+            $secret = $Arguments[[array]::IndexOf($Arguments, '--name') + 1]
+            $expires = [datetimeoffset] $Arguments[[array]::IndexOf($Arguments, '--expires') + 1]
+            $tokenOutput = & $Command account get-access-token --resource https://vault.azure.net `
+                --subscription $subscription --output json 2>&1
+            if ($LASTEXITCODE -ne 0) {
+                return @{ ExitCode = 1; Output = 'Key Vault token acquisition failed. Renew the Azure CLI interactive login.' }
+            }
+            $client = $null
+            $request = $null
+            $response = $null
+            try {
+                $token = ($tokenOutput -join "`n" | ConvertFrom-Json -AsHashtable).accessToken
+                if (-not $token) { throw 'Missing access token.' }
+                $secretTags = @{}
+                for ($index = [array]::IndexOf($Arguments, '--tags') + 1;
+                    $index -lt $Arguments.Count -and -not $Arguments[$index].StartsWith('--'); $index++) {
+                    $parts = $Arguments[$index] -split '=', 2
+                    $secretTags[$parts[0]] = $parts[1]
+                }
+                $handler = [System.Net.Http.HttpClientHandler]::new()
+                $handler.AllowAutoRedirect = $false
+                $client = [System.Net.Http.HttpClient]::new($handler)
+                $client.Timeout = [timespan]::FromSeconds(100)
+                $request = [System.Net.Http.HttpRequestMessage]::new(
+                    [System.Net.Http.HttpMethod]::Put,
+                    "https://$vault.vault.azure.net/secrets/${secret}?api-version=7.4"
+                )
+                $request.Headers.Authorization = [System.Net.Http.Headers.AuthenticationHeaderValue]::new('Bearer', $token)
+                $body = @{
+                    value = $SensitiveArguments.Value
+                    attributes = @{ enabled = $true; exp = $expires.ToUnixTimeSeconds() }
+                    tags = $secretTags
+                } | ConvertTo-Json -Compress -Depth 5
+                $request.Content = [System.Net.Http.StringContent]::new($body, [Text.Encoding]::UTF8, 'application/json')
+                $response = $client.SendAsync($request).GetAwaiter().GetResult()
+                if (-not $response.IsSuccessStatusCode) {
+                    return @{ ExitCode = 1; Output = "Key Vault returned HTTP $([int] $response.StatusCode) ($($response.StatusCode))." }
+                }
+                $document = $response.Content.ReadAsStringAsync().GetAwaiter().GetResult() |
+                    ConvertFrom-Json -AsHashtable
+                $metadata = @{
+                    id = $document.id
+                    attributes = @{
+                        enabled = $document.attributes.enabled
+                        expires = [datetimeoffset]::FromUnixTimeSeconds($document.attributes.exp).ToString('o')
+                    }
+                    tags = $document.tags
+                }
+                return @{ ExitCode = 0; Output = ($metadata | ConvertTo-Json -Depth 5 -Compress) }
+            }
+            catch {
+                return @{ ExitCode = 1; Output = 'Key Vault secret write failed. Check network connectivity, vault data-plane permissions, and retained recovery metadata.' }
+            }
+            finally {
+                if ($response) { $response.Dispose() }
+                if ($request) { $request.Dispose() }
+                if ($client) { $client.Dispose() }
+                $token = $null
+                $tokenOutput = $null
+                $body = $null
+                $document = $null
+            }
+        }
         $output = & $Command @Arguments 2>&1
         @{ ExitCode = $LASTEXITCODE; Output = ($output | Out-String) }
-    }
+    },
+
+    [scriptblock] $GraphRunner,
+
+    [scriptblock] $Clock = { [datetimeoffset]::UtcNow }
 )
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 $PSNativeCommandUseErrorActionPreference = $false
 
+function Invoke-SensitiveAdapter {
+    param([scriptblock] $Adapter, [object[]] $AdapterArguments, [string] $FailureMessage)
+    $pipeline = [powershell]::Create()
+    $callerErrors = $Error
+    $previousErrors = @($callerErrors)
+    $succeeded = $false
+    $value = $null
+    try {
+        $null = $pipeline.AddScript({
+            param($Adapter, $AdapterArguments)
+            $ErrorActionPreference = 'Stop'
+            $VerbosePreference = 'SilentlyContinue'
+            $DebugPreference = 'SilentlyContinue'
+            $PSNativeCommandUseErrorActionPreference = $false
+            try {
+                $value = & $Adapter @AdapterArguments 3>$null 4>$null 5>$null 6>$null
+                @{ Succeeded = $true; Value = $value }
+            }
+            catch {
+                @{ Succeeded = $false; Value = $null }
+            }
+        }).AddArgument($Adapter).AddArgument($AdapterArguments)
+        $results = $pipeline.Invoke()
+        if (-not $pipeline.HadErrors -and $results.Count -eq 1 -and $results[0].Succeeded) {
+            $value = $results[0].Value
+            $succeeded = $true
+        }
+    }
+    catch {
+        $succeeded = $false
+    }
+    finally {
+        $pipeline.Dispose()
+        # A caller-bound adapter can retain its original error-history scope.
+        foreach ($record in @($callerErrors)) {
+            if ($record -notin $previousErrors) { $callerErrors.Remove($record) }
+        }
+    }
+    if (-not $succeeded) { throw $FailureMessage }
+    return $value
+}
+
 function Invoke-ValidationCommand {
-    param([string[]] $Arguments, [string] $Remediation, [string] $Phase = 'Preflight')
-    $result = & $CommandRunner 'az' $Arguments
+    param(
+        [string[]] $Arguments,
+        [string] $Remediation,
+        [string] $Phase = 'Preflight',
+        [System.Collections.IDictionary] $SensitiveArguments
+    )
+    if ($SensitiveArguments) {
+        $result = Invoke-SensitiveAdapter -Adapter $CommandRunner `
+            -AdapterArguments @('az', $Arguments, $SensitiveArguments) `
+            -FailureMessage "${Phase}: sensitive command failed. $Remediation"
+    }
+    else {
+        $result = & $CommandRunner 'az' $Arguments
+    }
     if ($null -eq $result -or -not $result.Contains('ExitCode') -or -not $result.Contains('Output')) {
         throw "${Phase}: command runner must return ExitCode and Output."
     }
-    if ($result.ExitCode -ne 0) {
-        throw "${Phase}: az $($Arguments -join ' ') failed. $Remediation`n$($result.Output)"
+    $safeOutput = [string] $result.Output
+    if ($SensitiveArguments) {
+        foreach ($sensitiveValue in $SensitiveArguments.Values) {
+            if ($sensitiveValue) {
+                $safeOutput = $safeOutput.Replace([string] $sensitiveValue, '[REDACTED]')
+            }
+        }
     }
-    return [string] $result.Output
+    if ($result.ExitCode -ne 0) {
+        throw "${Phase}: az $($Arguments -join ' ') failed. $Remediation`n$safeOutput"
+    }
+    return $safeOutput
 }
 
 function Invoke-AzureJson {
-    param([string[]] $Arguments, [string] $Phase, [string] $Remediation)
-    $output = Invoke-ValidationCommand -Arguments $Arguments -Phase $Phase -Remediation $Remediation
+    param(
+        [string[]] $Arguments,
+        [string] $Phase,
+        [string] $Remediation,
+        [System.Collections.IDictionary] $SensitiveArguments
+    )
+    $output = Invoke-ValidationCommand -Arguments $Arguments -Phase $Phase -Remediation $Remediation `
+        -SensitiveArguments $SensitiveArguments
     try {
         return ConvertFrom-Json -InputObject $output -AsHashtable -NoEnumerate
     }
@@ -59,6 +201,116 @@ function Assert-FoundationProperties {
             throw "Azure foundation: incompatible resource '$($Resource.name)': '$path' differs from the deployment contract. Resolve the conflict before retrying."
         }
     }
+}
+
+function Save-DeploymentState {
+    param([System.Collections.IDictionary] $State, [string] $Path)
+    $temporaryPath = "$Path.$([guid]::NewGuid()).tmp"
+    try {
+        $State | ConvertTo-Json -Depth 7 | Set-Content -LiteralPath $temporaryPath -Encoding utf8
+        Move-Item -LiteralPath $temporaryPath -Destination $Path -Force
+    }
+    finally {
+        if (Test-Path -LiteralPath $temporaryPath) { Remove-Item -LiteralPath $temporaryPath }
+    }
+}
+
+function Invoke-DeploymentGraph {
+    param([string] $Operation, [System.Collections.IDictionary] $Parameters)
+    $VerbosePreference = 'SilentlyContinue'
+    $DebugPreference = 'SilentlyContinue'
+    if ($Operation -eq 'Connect') {
+        Connect-MgGraph -TenantId $Parameters.TenantId -Scopes $Parameters.Scopes `
+            -ContextScope Process -NoWelcome -ErrorAction Stop | Out-Null
+        $context = Get-MgContext
+        return @{
+            TenantId = $context.TenantId
+            AuthType = $context.AuthType
+            Account = $context.Account
+        }
+    }
+    $root = 'https://graph.microsoft.com/v1.0'
+    $body = $null
+    $method = 'GET'
+    switch ($Operation) {
+        'FindApplications' {
+            $filter = [uri]::EscapeDataString("displayName eq '$($Parameters.DisplayName)'")
+            $uri = "$root/applications?`$filter=$filter&`$select=id,appId,displayName,signInAudience,tags"
+        }
+        'CreateApplication' {
+            $method = 'POST'
+            $uri = "$root/applications"
+            $body = @{
+                displayName = $Parameters.DisplayName
+                signInAudience = $Parameters.SignInAudience
+                tags = $Parameters.Tags
+            }
+        }
+        'FindServicePrincipals' {
+            $filter = [uri]::EscapeDataString("appId eq '$($Parameters.AppId)'")
+            $uri = "$root/servicePrincipals?`$filter=$filter&`$select=id,appId,appOwnerOrganizationId"
+        }
+        'CreateServicePrincipal' {
+            $method = 'POST'
+            $uri = "$root/servicePrincipals"
+            $body = @{ appId = $Parameters.AppId }
+        }
+        'GetGlobalReaderRole' {
+            $filter = [uri]::EscapeDataString("templateId eq '$($Parameters.TemplateId)'")
+            $uri = "$root/roleManagement/directory/roleDefinitions?`$filter=$filter"
+        }
+        'FindRoleAssignments' {
+            $filter = [uri]::EscapeDataString(
+                "principalId eq '$($Parameters.PrincipalId)' and roleDefinitionId eq '$($Parameters.RoleDefinitionId)' and directoryScopeId eq '/'"
+            )
+            $uri = "$root/roleManagement/directory/roleAssignments?`$filter=$filter"
+        }
+        'AssignGlobalReader' {
+            $method = 'POST'
+            $uri = "$root/roleManagement/directory/roleAssignments"
+            $body = @{
+                principalId = $Parameters.PrincipalId
+                roleDefinitionId = $Parameters.RoleDefinitionId
+                directoryScopeId = '/'
+            }
+        }
+        'CreatePassword' {
+            $method = 'POST'
+            $uri = "$root/applications/$($Parameters.ApplicationObjectId)/addPassword"
+            $body = @{ passwordCredential = @{
+                displayName = $Parameters.DisplayName
+                endDateTime = $Parameters.EndDateTime
+            } }
+        }
+        'GetPasswordCredentials' {
+            $document = Invoke-MgGraphRequest -Method GET `
+                -Uri "$root/applications/$($Parameters.ApplicationObjectId)?`$select=passwordCredentials" `
+                -OutputType Hashtable -ErrorAction Stop -Verbose:$false -Debug:$false
+            if ($document -isnot [System.Collections.IDictionary] -or
+                -not $document.Contains('passwordCredentials') -or $document.passwordCredentials -isnot [array]) {
+                throw 'Runtime credential: Microsoft Graph returned invalid application credential metadata.'
+            }
+            return $document.passwordCredentials
+        }
+        default { throw 'Runtime identity: unsupported Microsoft Graph operation.' }
+    }
+    if ($method -eq 'POST') {
+        return Invoke-MgGraphRequest -Method POST -Uri $uri -Body ($body | ConvertTo-Json -Depth 5) `
+            -OutputType Hashtable -ErrorAction Stop -Verbose:$false -Debug:$false
+    }
+    do {
+        $page = Invoke-MgGraphRequest -Method GET -Uri $uri -OutputType Hashtable `
+            -ErrorAction Stop -Verbose:$false -Debug:$false
+        if ($page -isnot [System.Collections.IDictionary] -or -not $page.Contains('value') -or
+            $page.value -isnot [array]) {
+            throw 'Runtime identity: Microsoft Graph returned an invalid collection.'
+        }
+        $page.value
+        $uri = if ($page.Contains('@odata.nextLink')) { $page['@odata.nextLink'] } else { $null }
+        if ($uri -and -not ([string] $uri).StartsWith("$root/", [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Runtime identity: Microsoft Graph returned an unexpected pagination URL.'
+        }
+    } while ($uri)
 }
 
 if (-not (Test-Path -LiteralPath $ConfigurationPath -PathType Leaf)) {
@@ -237,7 +489,7 @@ $names = [ordered] @{
     deploymentContainer = 'inventory-sync-deploy'
 }
 $azureContext = $null
-if ($Mode -eq 'DeployFoundation') {
+if ($Mode -in @('DeployFoundation', 'DeployIdentity')) {
     if ($TenantId -notmatch '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$' -or
         [guid] $TenantId -eq [guid]::Empty -or [guid] $configuration.subscriptionId -eq [guid]::Empty) {
         throw 'Preflight: DeployFoundation requires a non-zero -TenantId GUID and subscriptionId.'
@@ -261,6 +513,33 @@ if ($Mode -eq 'DeployFoundation') {
         throw 'Preflight: an enabled subscription and an interactively authenticated user are required. Run az login --tenant <tenant-id>.'
     }
     Write-Information "Azure context: tenant $($azureContext.tenantId), subscription $($azureContext.id), operator $($azureContext.user.name)." -InformationAction Continue
+    if ($Mode -eq 'DeployIdentity') {
+        if (-not $StatePath) {
+            throw 'Runtime identity: DeployIdentity requires -StatePath so non-secret recovery metadata can be retained.'
+        }
+        if (-not $GraphRunner) {
+            if (-not $prerequisites[3].Available) {
+                throw "Runtime identity: Microsoft Graph PowerShell is missing. $($prerequisites[3].Guidance)"
+            }
+            $GraphRunner = ${function:Invoke-DeploymentGraph}
+        }
+        $graphContext = & $GraphRunner 'Connect' @{
+            TenantId = $TenantId
+            Scopes = @('Application.ReadWrite.All', 'RoleManagement.ReadWrite.Directory')
+        }
+        if ($graphContext -isnot [System.Collections.IDictionary] -or
+            -not $graphContext.Contains('TenantId') -or -not $graphContext.Contains('AuthType') -or
+            -not $graphContext.Contains('Account')) {
+            throw 'Runtime identity: Microsoft Graph returned an invalid authentication context. Sign in interactively and retry.'
+        }
+        if ($graphContext.AuthType -ne 'Delegated' -or -not $graphContext.Account) {
+            throw 'Runtime identity: Microsoft Graph requires an interactively authenticated delegated user.'
+        }
+        if ($graphContext.TenantId -ne $TenantId) {
+            throw 'Runtime identity: Graph tenant mismatch. Reconnect Microsoft Graph interactively to the Azure deployment tenant.'
+        }
+        Write-Information "Microsoft Graph context: tenant $($graphContext.TenantId), operator $($graphContext.Account)." -InformationAction Continue
+    }
 }
 $settings = [ordered] @{
     FUNCTIONS_EXTENSION_VERSION = '~4'
@@ -315,11 +594,57 @@ if ($StatePath) {
         catch {
             throw 'State: expected a non-secret JSON state object. The existing file was not changed.'
         }
+        $savedStateFields = if ($savedState -is [System.Collections.IDictionary]) {
+            @($savedState.Keys | Sort-Object) -join ','
+        }
+        else { '' }
         if ($savedState -isnot [System.Collections.IDictionary] -or
-            (@($savedState.Keys | Sort-Object) -join ',') -ne 'configurationHash,phases,schemaVersion' -or
+            $savedStateFields -notin @(
+                'configurationHash,phases,schemaVersion',
+                'configurationHash,identity,phases,schemaVersion'
+            ) -or
             $savedState.schemaVersion -ne 1 -or $savedState.configurationHash -ne $configurationHash -or
             $savedState.phases -isnot [array] -or $savedState.phases.Count -ne $phases.Count) {
             throw 'State: invalid schema or configuration mismatch. Use a separate state file for this configuration; the existing file was not changed.'
+        }
+        if ($savedState.Contains('identity')) {
+            $savedIdentity = $savedState.identity
+            if ($savedIdentity -isnot [System.Collections.IDictionary] -or
+                (@($savedIdentity.Keys | Sort-Object) -join ',') -ne
+                    'applicationId,applicationObjectId,credential,globalReaderAssignmentId,servicePrincipalId') {
+                throw 'State: invalid non-secret identity recovery metadata. The existing file was not changed.'
+            }
+            foreach ($field in @('applicationId', 'applicationObjectId', 'servicePrincipalId')) {
+                if ($savedIdentity[$field] -isnot [string] -or
+                    $savedIdentity[$field] -notmatch '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$' -or
+                    [guid] $savedIdentity[$field] -eq [guid]::Empty) {
+                    throw 'State: invalid identity ID in non-secret recovery metadata. The existing file was not changed.'
+                }
+            }
+            if ($savedIdentity.globalReaderAssignmentId -isnot [string] -or
+                $savedIdentity.globalReaderAssignmentId -notmatch '^[a-zA-Z0-9_-]{1,256}$') {
+                throw 'State: invalid directory-role assignment ID in non-secret recovery metadata. The existing file was not changed.'
+            }
+            if ($null -ne $savedIdentity.credential -and (
+                $savedIdentity.credential -isnot [System.Collections.IDictionary] -or
+                (@($savedIdentity.credential.Keys | Sort-Object) -join ',') -ne
+                    'expiresOn,keyId,keyVaultSecretVersion,status' -or
+                $savedIdentity.credential.status -notin @('Stored', 'PendingKeyVaultWrite'))) {
+                throw 'State: invalid non-secret credential recovery metadata. The existing file was not changed.'
+            }
+            if ($null -ne $savedIdentity.credential) {
+                $savedCredential = $savedIdentity.credential
+                if (($null -ne $savedCredential.keyId -and (
+                    $savedCredential.keyId -isnot [string] -or
+                    $savedCredential.keyId -notmatch '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$')) -or
+                    ($null -ne $savedCredential.keyVaultSecretVersion -and (
+                    $savedCredential.keyVaultSecretVersion -isnot [string] -or
+                    $savedCredential.keyVaultSecretVersion -notmatch '^[a-zA-Z0-9-]{1,64}$'))) {
+                    throw 'State: invalid credential ID in non-secret recovery metadata. The existing file was not changed.'
+                }
+                try { $null = [datetimeoffset] $savedCredential.expiresOn }
+                catch { throw 'State: invalid credential expiry metadata. The existing file was not changed.' }
+            }
         }
         for ($index = 0; $index -lt $phases.Count; $index++) {
             $savedPhase = $savedState.phases[$index]
@@ -352,7 +677,7 @@ for ($index = 0; $index -lt $phases.Count; $index++) {
 }
 
 $cloudChangesMade = $false
-if ($Mode -eq 'DeployFoundation') {
+if ($Mode -in @('DeployFoundation', 'DeployIdentity')) {
     $remediation = 'Inspect Azure Policy, resource providers, quota, deployment errors, and operator permissions. Fix the reported cause and rerun DeployFoundation; later phases have not run.'
     $scope = @('--subscription', $configuration.subscriptionId, '--output', 'json')
     $groupExists = Invoke-AzureJson -Arguments (@('group', 'exists', '--name', $names.resourceGroup) + $scope) `
@@ -530,14 +855,362 @@ if ($Mode -eq 'DeployFoundation') {
     }
 }
 
+$runtimeIdentity = $null
+if ($Mode -eq 'DeployIdentity') {
+    $identityRemediation = 'Verify Microsoft Graph permissions, directory-role privileges, and tenant context, then rerun DeployIdentity.'
+    $ownershipTag = "InventorySyncInstallation:$suffix"
+    $applicationCandidates = @(& $GraphRunner 'FindApplications' @{
+        DisplayName = $names.appRegistration
+    })
+    if ($applicationCandidates.Count -gt 1) {
+        throw "Runtime identity: multiple app registrations use the managed display name. Remove the ambiguity before retrying. $identityRemediation"
+    }
+    if ($state.Contains('identity') -and (
+        $applicationCandidates.Count -ne 1 -or
+        $applicationCandidates[0].Id -ne $state.identity.applicationObjectId -or
+        $applicationCandidates[0].AppId -ne $state.identity.applicationId)) {
+        throw 'Runtime identity: the saved application is missing or changed. Restore the managed identity before retrying; it will not be replaced implicitly.'
+    }
+    if ($applicationCandidates.Count -eq 0) {
+        $application = & $GraphRunner 'CreateApplication' @{
+            DisplayName = $names.appRegistration
+            SignInAudience = 'AzureADMyOrg'
+            Tags = @($ownershipTag, "InventorySyncWorkload:$stem")
+        }
+        $cloudChangesMade = $true
+    }
+    else {
+        $application = $applicationCandidates[0]
+    }
+    if ($application -isnot [System.Collections.IDictionary] -or
+        -not $application.Contains('Id') -or -not $application.Contains('AppId') -or
+        -not $application.Contains('DisplayName') -or -not $application.Contains('SignInAudience') -or
+        -not $application.Contains('Tags')) {
+        $applicationType = if ($null -eq $application) { 'null' } else { $application.GetType().FullName }
+        $applicationFields = if ($application -is [System.Collections.IDictionary]) {
+            @($application.Keys | Sort-Object) -join ','
+        }
+        else { 'none' }
+        throw "Runtime identity: Microsoft Graph returned an invalid app registration (type '$applicationType', fields '$applicationFields'). $identityRemediation"
+    }
+    if ($application.DisplayName -ne $names.appRegistration -or
+        $application.SignInAudience -ne 'AzureADMyOrg') {
+        throw "Runtime identity: the app registration is incompatible with the deployment contract. $identityRemediation"
+    }
+    if ($ownershipTag -notin @($application.Tags)) {
+        throw "Runtime identity: the app registration is not bootstrap-managed. $identityRemediation"
+    }
+
+    $servicePrincipalCandidates = @(& $GraphRunner 'FindServicePrincipals' @{
+        AppId = $application.AppId
+    })
+    if ($servicePrincipalCandidates.Count -gt 1) {
+        throw "Runtime identity: multiple service principals match the managed application. Remove the ambiguity before retrying. $identityRemediation"
+    }
+    if ($state.Contains('identity') -and (
+        $servicePrincipalCandidates.Count -ne 1 -or
+        $servicePrincipalCandidates[0].Id -ne $state.identity.servicePrincipalId)) {
+        throw 'Runtime identity: the saved service principal is missing or changed. Restore it before retrying; it will not be replaced implicitly.'
+    }
+    if ($servicePrincipalCandidates.Count -eq 0) {
+        $servicePrincipal = & $GraphRunner 'CreateServicePrincipal' @{ AppId = $application.AppId }
+        $cloudChangesMade = $true
+    }
+    else {
+        $servicePrincipal = $servicePrincipalCandidates[0]
+    }
+    if ($servicePrincipal -isnot [System.Collections.IDictionary] -or
+        -not $servicePrincipal.Contains('Id') -or -not $servicePrincipal.Contains('AppId') -or
+        $servicePrincipal.AppId -ne $application.AppId) {
+        throw "Runtime identity: Microsoft Graph returned an invalid service principal. $identityRemediation"
+    }
+
+    $globalReaderRole = & $GraphRunner 'GetGlobalReaderRole' @{
+        TemplateId = 'f2ef992c-3afb-46b9-b7cf-a126ee74c451'
+    }
+    if ($globalReaderRole -isnot [System.Collections.IDictionary] -or
+        -not $globalReaderRole.Contains('Id') -or -not $globalReaderRole.Contains('TemplateId') -or
+        $globalReaderRole.TemplateId -ne 'f2ef992c-3afb-46b9-b7cf-a126ee74c451') {
+        throw "Runtime identity: Microsoft Graph did not return the Global Reader role definition. $identityRemediation"
+    }
+    $roleAssignments = @(& $GraphRunner 'FindRoleAssignments' @{
+        PrincipalId = $servicePrincipal.Id
+        RoleDefinitionId = $globalReaderRole.Id
+        DirectoryScopeId = '/'
+    })
+    if ($roleAssignments.Count -gt 1) {
+        throw "Runtime identity: multiple tenant-scope Global Reader assignments match the managed service principal. $identityRemediation"
+    }
+    $savedAssignmentId = if ($state.Contains('identity')) { $state.identity.globalReaderAssignmentId } else { $null }
+    $roleAssignment = if ($savedAssignmentId) { @{ Id = $savedAssignmentId } } else { $null }
+    if ($roleAssignments.Count -eq 0 -and -not $savedAssignmentId) {
+        try {
+            $roleAssignment = & $GraphRunner 'AssignGlobalReader' @{
+                PrincipalId = $servicePrincipal.Id
+                RoleDefinitionId = $globalReaderRole.Id
+                DirectoryScopeId = '/'
+            }
+        }
+        catch {
+            throw "Runtime identity: Global Reader assignment failed. $identityRemediation $($_.Exception.Message)"
+        }
+        if ($roleAssignment -isnot [System.Collections.IDictionary] -or
+            -not $roleAssignment.Contains('Id')) {
+            throw "Runtime identity: Microsoft Graph returned an invalid Global Reader assignment. $identityRemediation"
+        }
+        $cloudChangesMade = $true
+        $roleAssignments = @(& $GraphRunner 'FindRoleAssignments' @{
+            PrincipalId = $servicePrincipal.Id
+            RoleDefinitionId = $globalReaderRole.Id
+            DirectoryScopeId = '/'
+        })
+    }
+    if ($roleAssignments.Count -ne 1) {
+        $savedCredential = if ($state.Contains('identity')) { $state.identity.credential } else { $null }
+        $state['identity'] = [ordered] @{
+            applicationObjectId = $application.Id
+            applicationId = $application.AppId
+            servicePrincipalId = $servicePrincipal.Id
+            globalReaderAssignmentId = $roleAssignment.Id
+            credential = $savedCredential
+        }
+        $state.phases[2].status = 'Pending'
+        $state.phases[3].status = 'Pending'
+        Save-DeploymentState -State $state -Path $resolvedStatePath
+        throw 'Runtime identity: Global Reader assignment is pending propagation or the saved assignment was removed. Wait several minutes and rerun DeployIdentity; if it remains missing, have a directory-role administrator inspect and restore the saved assignment. No credential was created.'
+    }
+    $roleAssignment = $roleAssignments[0]
+    if ($roleAssignment -isnot [System.Collections.IDictionary] -or
+        -not $roleAssignment.Contains('Id') -or -not $roleAssignment.Contains('PrincipalId') -or
+        -not $roleAssignment.Contains('RoleDefinitionId') -or -not $roleAssignment.Contains('DirectoryScopeId') -or
+        $roleAssignment.PrincipalId -ne $servicePrincipal.Id -or
+        $roleAssignment.RoleDefinitionId -ne $globalReaderRole.Id -or
+        $roleAssignment.DirectoryScopeId -ne '/') {
+        throw "Runtime identity: Global Reader assignment did not validate at tenant scope. $identityRemediation"
+    }
+
+    $secretName = 'inventory-sync-client-secret'
+    $secretMetadata = Invoke-AzureJson -Arguments @(
+        'keyvault', 'secret', 'list', '--vault-name', $names.keyVault,
+        '--query', "[?name=='$secretName'].{id:id,attributes:attributes,tags:tags}",
+        '--subscription', $configuration.subscriptionId, '--output', 'json'
+    ) -Phase 'Runtime credential' `
+        -Remediation 'Verify Key Vault data-plane permissions and inspect the managed secret metadata before retrying.'
+    if ($secretMetadata -isnot [array] -or $secretMetadata.Count -gt 1) {
+        throw 'Runtime credential: Key Vault returned invalid or ambiguous secret metadata.'
+    }
+    $secretVersions = @()
+    if ($secretMetadata.Count -eq 1) {
+        $currentSecret = $secretMetadata[0]
+        if ($currentSecret -isnot [System.Collections.IDictionary] -or
+            -not $currentSecret.Contains('attributes') -or
+            $currentSecret.attributes -isnot [System.Collections.IDictionary] -or
+            -not $currentSecret.attributes.Contains('enabled') -or
+            $currentSecret.attributes.enabled -isnot [bool]) {
+            throw 'Runtime credential: Key Vault returned invalid enabled metadata. No credential was replaced.'
+        }
+        if (-not $currentSecret.attributes.enabled) {
+            throw 'Runtime credential: the current managed secret is disabled or expired. Restore it or use explicit credential rotation; DeployIdentity never rotates implicitly.'
+        }
+        $secretVersions = Invoke-AzureJson -Arguments @(
+            'keyvault', 'secret', 'list-versions', '--vault-name', $names.keyVault,
+            '--name', $secretName, '--query',
+            '[].{id:id,attributes:{enabled:attributes.enabled,expires:attributes.expires},tags:tags}',
+            '--subscription', $configuration.subscriptionId, '--output', 'json'
+        ) -Phase 'Runtime credential' `
+            -Remediation 'Verify Key Vault data-plane permissions and inspect the managed secret metadata before retrying.'
+        if ($secretVersions -isnot [array] -or $secretVersions.Count -eq 0) {
+            throw 'Runtime credential: an existing secret has no readable versions. Inspect the vault before retrying; no password was created.'
+        }
+        foreach ($version in $secretVersions) {
+            if ($version -isnot [System.Collections.IDictionary] -or
+                -not $version.Contains('attributes') -or $version.attributes -isnot [System.Collections.IDictionary] -or
+                -not $version.attributes.Contains('enabled') -or $version.attributes.enabled -isnot [bool]) {
+                throw 'Runtime credential: Key Vault returned invalid enabled metadata. No credential was replaced.'
+            }
+        }
+        $secretVersions = @($secretVersions | Where-Object { $_.attributes.enabled })
+        if ($secretVersions.Count -eq 0) {
+            throw 'Runtime credential: no enabled managed secret version is available. Inspect Key Vault; no credential was replaced.'
+        }
+    }
+    if ($secretVersions.Count -gt 1) {
+        throw 'Runtime credential: multiple enabled managed Key Vault secret versions are ambiguous. Disable stale versions before retrying.'
+    }
+
+    $credentialKeyId = $null
+    if ($secretVersions.Count -eq 0) {
+        if ($state.Contains('identity') -and
+            $state.identity.credential -is [System.Collections.IDictionary] -and
+            $state.identity.credential.status -eq 'PendingKeyVaultWrite') {
+            throw 'Runtime credential: a previously created application password was not stored in Key Vault. Remove that password by the retained key ID, clear the pending credential metadata, and rerun; no duplicate password was created.'
+        }
+        $existingPasswords = @(& $GraphRunner 'GetPasswordCredentials' @{
+            ApplicationObjectId = $application.Id
+        } | Where-Object displayName -eq "$stem-keyvault")
+        if ($existingPasswords.Count -gt 0) {
+            $orphan = $existingPasswords[0]
+            $state['identity'] = [ordered] @{
+                applicationObjectId = $application.Id
+                applicationId = $application.AppId
+                servicePrincipalId = $servicePrincipal.Id
+                globalReaderAssignmentId = $roleAssignment.Id
+                credential = [ordered] @{
+                    keyId = $orphan.keyId
+                    expiresOn = $orphan.endDateTime
+                    keyVaultSecretVersion = $null
+                    status = 'PendingKeyVaultWrite'
+                }
+            }
+            Save-DeploymentState -State $state -Path $resolvedStatePath
+            throw 'Runtime credential: a managed application password already exists without a Key Vault secret. Inspect managed passwords and remove orphaned credentials using their key IDs before clearing pending credential metadata and retrying; no duplicate was created.'
+        }
+        $credentialExpiry = [datetimeoffset]::FromUnixTimeSeconds((& $Clock).ToUnixTimeSeconds()).AddMonths(12)
+        $requestedCredentialExpiry = $credentialExpiry
+        $password = Invoke-SensitiveAdapter -Adapter $GraphRunner -AdapterArguments @(
+            'CreatePassword', @{
+                ApplicationObjectId = $application.Id
+                DisplayName = "$stem-keyvault"
+                EndDateTime = $credentialExpiry.ToString('o')
+            }
+        ) -FailureMessage "Runtime credential: application password creation failed or its outcome is unknown. Inspect credentials on application '$($application.Id)' before retrying; no Key Vault write was attempted."
+        if ($password -isnot [System.Collections.IDictionary] -or
+            -not $password.Contains('KeyId') -or -not $password.Contains('SecretText') -or
+            -not $password.Contains('EndDateTime') -or -not $password.SecretText) {
+            throw 'Runtime credential: Microsoft Graph returned invalid password metadata; no Key Vault write was attempted.'
+        }
+        $credentialKeyId = $password.KeyId
+        $validCredentialExpiry = $true
+        try { $credentialExpiry = ([datetimeoffset] $password.EndDateTime).ToUniversalTime() }
+        catch { $validCredentialExpiry = $false }
+        $state['identity'] = [ordered] @{
+            applicationObjectId = $application.Id
+            applicationId = $application.AppId
+            servicePrincipalId = $servicePrincipal.Id
+            globalReaderAssignmentId = $roleAssignment.Id
+            credential = [ordered] @{
+                keyId = $credentialKeyId
+                expiresOn = $credentialExpiry
+                keyVaultSecretVersion = $null
+                status = 'PendingKeyVaultWrite'
+            }
+        }
+        Save-DeploymentState -State $state -Path $resolvedStatePath
+        if (-not $validCredentialExpiry -or $credentialExpiry -ne $requestedCredentialExpiry) {
+            $password.SecretText = $null
+            throw 'Runtime credential: Microsoft Graph returned unexpected credential expiry. Remove the password using the retained key ID and resolve the credential-lifetime policy before retrying; no Key Vault write was attempted.'
+        }
+        try {
+            $secretValue = [string] $password.SecretText
+            $secret = Invoke-AzureJson -Arguments @(
+                'keyvault', 'secret', 'set', '--vault-name', $names.keyVault,
+                '--name', $secretName, '--expires', $credentialExpiry.ToString('o'),
+                '--tags', "inventory-sync-installation=$suffix", "application-id=$($application.AppId)",
+                "credential-key-id=$credentialKeyId",
+                '--query', '{id:id,attributes:{enabled:attributes.enabled,expires:attributes.expires},tags:tags}',
+                '--subscription', $configuration.subscriptionId, '--output', 'json'
+            ) -Phase 'Runtime credential' `
+                -Remediation 'The application password was created but the Key Vault write failed. Use the retained key ID and expiry metadata to remove the orphaned password before retrying.' `
+                -SensitiveArguments @{ Value = $secretValue }
+        }
+        finally {
+            $secretValue = $null
+            $password.SecretText = $null
+        }
+        if ($secret -isnot [System.Collections.IDictionary] -or
+            -not $secret.Contains('id') -or -not $secret.Contains('attributes') -or
+            $secret.attributes -isnot [System.Collections.IDictionary] -or
+            -not $secret.attributes.Contains('expires')) {
+            throw 'Runtime credential: Key Vault returned invalid non-secret metadata after writing the managed secret.'
+        }
+        $secretVersions = @($secret)
+        $cloudChangesMade = $true
+    }
+    elseif ($secretVersions[0] -isnot [System.Collections.IDictionary] -or
+        -not $secretVersions[0].Contains('id') -or -not $secretVersions[0].Contains('attributes') -or
+        $secretVersions[0].attributes -isnot [System.Collections.IDictionary] -or
+        -not $secretVersions[0].attributes.Contains('expires')) {
+        throw 'Runtime credential: the enabled managed Key Vault secret version has invalid metadata.'
+    }
+    $secretRecord = $secretVersions[0]
+    if (-not $secretRecord.Contains('tags') -or
+        $secretRecord.tags -isnot [System.Collections.IDictionary] -or
+        -not $secretRecord.tags.Contains('inventory-sync-installation') -or
+        -not $secretRecord.tags.Contains('application-id') -or
+        $secretRecord.tags['inventory-sync-installation'] -ne $suffix -or
+        $secretRecord.tags['application-id'] -ne $application.AppId) {
+        throw 'Runtime credential: Key Vault secret ownership does not match the managed installation and application. No existing credential was replaced.'
+    }
+    if (-not $secretRecord.attributes.Contains('enabled') -or
+        $secretRecord.attributes.enabled -isnot [bool]) {
+        throw 'Runtime credential: Key Vault returned invalid enabled metadata. No credential was replaced.'
+    }
+    try {
+        if ($null -eq $secretRecord.attributes.expires) { throw 'Missing expiry.' }
+        $storedExpiry = ([datetimeoffset] $secretRecord.attributes.expires).ToUniversalTime()
+    }
+    catch {
+        throw 'Runtime credential: Key Vault returned invalid expiry metadata. No credential was replaced.'
+    }
+    if ($secretRecord.attributes.enabled -ne $true -or $storedExpiry -le (& $Clock).ToUniversalTime()) {
+        throw 'Runtime credential: the managed secret is disabled or expired. Restore it or use explicit credential rotation; DeployIdentity never rotates implicitly.'
+    }
+    if ($secretRecord.tags.Contains('credential-key-id')) {
+        $credentialKeyId = $secretRecord.tags['credential-key-id']
+    }
+    if ($state.Contains('identity') -and
+        $state.identity.credential -is [System.Collections.IDictionary] -and
+        $state.identity.credential.status -eq 'Stored') {
+        $credentialKeyId = $state.identity.credential.keyId
+    }
+    $secretVersion = ($secretVersions[0].id -split '/')[-1]
+    $identityState = [ordered] @{
+        applicationObjectId = $application.Id
+        applicationId = $application.AppId
+        servicePrincipalId = $servicePrincipal.Id
+        globalReaderAssignmentId = $roleAssignment.Id
+        credential = [ordered] @{
+            keyId = $credentialKeyId
+            expiresOn = $storedExpiry
+            keyVaultSecretVersion = $secretVersion
+            status = 'Stored'
+        }
+    }
+    $state['identity'] = $identityState
+    for ($index = 2; $index -lt 4; $index++) {
+        $phases[$index].Status = 'Completed'
+        $phases[$index].NeedsRevalidation = $false
+        $state.phases[$index].status = 'Completed'
+    }
+    Save-DeploymentState -State $state -Path $resolvedStatePath
+    $runtimeIdentity = [pscustomobject] @{
+        ApplicationObjectId = $application.Id
+        ApplicationId = $application.AppId
+        ServicePrincipalId = $servicePrincipal.Id
+        GlobalReaderAssignmentId = $roleAssignment.Id
+        Credential = [pscustomobject] @{
+            KeyId = $credentialKeyId
+            ExpiresOn = $storedExpiry
+            KeyVaultSecretVersion = $secretVersion
+        }
+    }
+    $settings.INVENTORY_TENANT_ID = $TenantId
+    $settings.INVENTORY_CLIENT_ID = $application.AppId
+}
+
 [pscustomobject] @{
     SchemaVersion = 1
     Mode = $Mode
-    Status = $(if ($Mode -eq 'DeployFoundation') { 'FoundationValidated' } else { 'PlanValidated' })
+    Status = $(switch ($Mode) {
+        'DeployFoundation' { 'FoundationValidated' }
+        'DeployIdentity' { 'IdentityValidated' }
+        default { 'PlanValidated' }
+    })
     CloudChangesMade = $cloudChangesMade
     DeploymentImplemented = $false
     FoundationDeploymentImplemented = $true
     AzureContext = $azureContext
+    Identity = $runtimeIdentity
     DeploymentMode = 'Incremental'
     Configuration = $configuration
     ResourceNames = $names
@@ -564,13 +1237,16 @@ if ($Mode -eq 'DeployFoundation') {
     Prerequisites = $prerequisites
     Compilation = $compilation
     Phases = $phases
-    UnresolvedValues = @('INVENTORY_TENANT_ID', 'INVENTORY_CLIENT_ID', 'APPLICATIONINSIGHTS_CONNECTION_STRING')
+    UnresolvedValues = $(if ($Mode -eq 'DeployIdentity') {
+        @('APPLICATIONINSIGHTS_CONNECTION_STRING')
+    }
+    else { @('INVENTORY_TENANT_ID', 'INVENTORY_CLIENT_ID', 'APPLICATIONINSIGHTS_CONNECTION_STRING') })
     StateContract = @{
         SchemaVersion = 1
         PersistsSecrets = $false
         RevalidateBeforeResume = $true
         AllowedStatuses = @('Pending', 'Completed')
-        AllowedFields = @('schemaVersion', 'configurationHash', 'phases')
+        AllowedFields = @('schemaVersion', 'configurationHash', 'phases', 'identity')
         AllowedPhaseFields = @('id', 'status')
         ConfigurationHash = $configurationHash
     }

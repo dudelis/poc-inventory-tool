@@ -7,8 +7,10 @@ inventory syncs:
 - `RpaSyncTimer` inventories desktop flows as component type `4`.
 
 For a new installation, use the [portable deployment package](../deploy/README.md)
-to plan and provision the dedicated Azure foundation. Runtime identity, Function
-deployment, and Power Platform setup still require the manual steps here. Use the
+to plan and provision the dedicated Azure foundation, then establish the runtime
+identity and Key Vault credential with `DeployIdentity`. The package documents its
+interactive Graph permissions, required operator vault role, and resumable credential
+recovery. Function deployment and Power Platform setup still require the manual steps here. Use the
 bootstrap's reported resource names, not the existing manual installation's names.
 
 Both timers start singleton Durable orchestrations. They use one Entra service principal

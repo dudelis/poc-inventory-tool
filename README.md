@@ -6,8 +6,10 @@ PowerShell 7.6 Azure Functions project for synchronizing Power Platform inventor
 
 The [portable deployment package](deploy/README.md) supports offline planning and
 explicit deployment of the dedicated Azure foundation (resource group, storage,
-RBAC Key Vault, Log Analytics, and Application Insights). Runtime identity,
-Function deployment, and Power Platform readiness phases are not automated yet.
+RBAC Key Vault, Log Analytics, and Application Insights), plus interactive
+tenant-local runtime identity provisioning, Global Reader assignment, and secure
+Key Vault credential storage. Function deployment and Power Platform readiness
+phases are not automated yet.
 
 Start with the [prerequisites](docs/prerequisites.md): Azure resources, Key Vault,
 Entra and Dataverse permissions, and the values to collect before deployment.
