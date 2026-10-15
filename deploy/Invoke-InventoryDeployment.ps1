@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory)]
     [string] $ConfigurationPath,
 
-    [ValidateSet('Plan', 'DeployFoundation', 'DeployIdentity', 'DeployFunctions')]
+    [ValidateSet('Plan', 'DeployFoundation', 'DeployIdentity', 'DeployFunctions', 'DeployPowerPlatform')]
     [string] $Mode = 'Plan',
 
     [string] $TenantId,
@@ -144,7 +144,7 @@ function Invoke-ValidationCommand {
         [string] $Remediation,
         [string] $Phase = 'Preflight',
         [System.Collections.IDictionary] $SensitiveArguments,
-        [ValidateSet('az', 'func')]
+        [ValidateSet('az', 'func', 'pac')]
         [string] $Command = 'az',
         [switch] $SanitizeOutput
     )
@@ -214,7 +214,15 @@ function Assert-FoundationProperties {
             }
             $actual = $actual[$segment]
         }
-        if ($actual -ne $Expected[$path]) {
+        $expectedValue = $Expected[$path]
+        $matches = if ($path -eq 'location' -and
+            $actual -is [string] -and $expectedValue -is [string]) {
+            ($actual -replace '\s', '') -eq ($expectedValue -replace '\s', '')
+        }
+        else {
+            $actual -eq $expectedValue
+        }
+        if (-not $matches) {
             throw "${Phase}: incompatible resource: '$path' differs from the deployment contract. Resolve the conflict before retrying."
         }
     }
@@ -505,8 +513,12 @@ $names = [ordered] @{
     appRegistration = $stem
     deploymentContainer = 'inventory-sync-deploy'
 }
+if ($Mode -eq 'DeployPowerPlatform' -and
+    ($configuration.agentTimerEnabled -or $configuration.rpaTimerEnabled)) {
+    throw 'Readiness validation: timers must remain disabled until every manual readiness check and the capped smoke run are confirmed. Set both timer inputs to false and retry DeployPowerPlatform.'
+}
 $azureContext = $null
-if ($Mode -in @('DeployFoundation', 'DeployIdentity', 'DeployFunctions')) {
+if ($Mode -in @('DeployFoundation', 'DeployIdentity', 'DeployFunctions', 'DeployPowerPlatform')) {
     if ($TenantId -notmatch '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$' -or
         [guid] $TenantId -eq [guid]::Empty -or [guid] $configuration.subscriptionId -eq [guid]::Empty) {
         throw 'Preflight: DeployFoundation requires a non-zero -TenantId GUID and subscriptionId.'
@@ -530,7 +542,7 @@ if ($Mode -in @('DeployFoundation', 'DeployIdentity', 'DeployFunctions')) {
         throw 'Preflight: an enabled subscription and an interactively authenticated user are required. Run az login --tenant <tenant-id>.'
     }
     Write-Information "Azure context: tenant $($azureContext.tenantId), subscription $($azureContext.id), operator $($azureContext.user.name)." -InformationAction Continue
-    if ($Mode -eq 'DeployFunctions') {
+    if ($Mode -in @('DeployFunctions', 'DeployPowerPlatform')) {
         if (-not $prerequisites[1].Available) {
             throw "Function deployment: Functions Core Tools v4 is missing. $($prerequisites[1].Guidance)"
         }
@@ -544,7 +556,15 @@ if ($Mode -in @('DeployFoundation', 'DeployIdentity', 'DeployFunctions')) {
             throw 'Function deployment: replace the agentCreatedIn placeholder with the tenant authoring-tool value before deploying.'
         }
     }
-    if ($Mode -in @('DeployIdentity', 'DeployFunctions')) {
+    if ($Mode -eq 'DeployPowerPlatform') {
+        if (-not $prerequisites[2].Available -and -not $PSBoundParameters.ContainsKey('CommandRunner')) {
+            throw "Logging solution: Power Platform CLI is missing. $($prerequisites[2].Guidance)"
+        }
+        Invoke-ValidationCommand -Command pac -Arguments @('--version') -Phase 'Logging solution' `
+            -Remediation 'Install Power Platform CLI explicitly before retrying DeployPowerPlatform.' |
+            Out-Null
+    }
+    if ($Mode -in @('DeployIdentity', 'DeployFunctions', 'DeployPowerPlatform')) {
         if (-not $StatePath) {
             throw 'Runtime identity: DeployIdentity requires -StatePath so non-secret recovery metadata can be retained.'
         }
@@ -705,7 +725,7 @@ for ($index = 0; $index -lt $phases.Count; $index++) {
 }
 
 $cloudChangesMade = $false
-if ($Mode -in @('DeployFoundation', 'DeployIdentity', 'DeployFunctions')) {
+if ($Mode -in @('DeployFoundation', 'DeployIdentity', 'DeployFunctions', 'DeployPowerPlatform')) {
     $remediation = 'Inspect Azure Policy, resource providers, quota, deployment errors, and operator permissions. Fix the reported cause and rerun DeployFoundation; later phases have not run.'
     $scope = @('--subscription', $configuration.subscriptionId, '--output', 'json')
     $groupExists = Invoke-AzureJson -Arguments (@('group', 'exists', '--name', $names.resourceGroup) + $scope) `
@@ -891,7 +911,7 @@ if ($Mode -in @('DeployFoundation', 'DeployIdentity', 'DeployFunctions')) {
 }
 
 $runtimeIdentity = $null
-if ($Mode -in @('DeployIdentity', 'DeployFunctions')) {
+if ($Mode -in @('DeployIdentity', 'DeployFunctions', 'DeployPowerPlatform')) {
     $identityRemediation = 'Verify Microsoft Graph permissions, directory-role privileges, and tenant context, then rerun DeployIdentity.'
     $ownershipTag = "InventorySyncInstallation:$suffix"
     $applicationCandidates = @(& $GraphRunner 'FindApplications' @{
@@ -1234,7 +1254,7 @@ if ($Mode -in @('DeployIdentity', 'DeployFunctions')) {
 }
 
 $functionValidation = $null
-if ($Mode -eq 'DeployFunctions') {
+if ($Mode -in @('DeployFunctions', 'DeployPowerPlatform')) {
     $phase = 'Function deployment'
     $functionRemediation = 'Inspect the managed Function deployment, Microsoft.Web registration, Flex region/runtime availability, and Azure RBAC permissions. Correct the cause and rerun DeployFunctions with the same state; do not enable timers in the portal.'
     $resourceRoot = "/subscriptions/$($configuration.subscriptionId)/resourceGroups/$($names.resourceGroup)/providers"
@@ -1335,7 +1355,7 @@ if ($Mode -eq 'DeployFunctions') {
                 @{
                     kind = 'functionapp,linux'; 'identity.type' = 'SystemAssigned'
                     'properties.state' = 'Running'; 'properties.serverFarmId' = $planId
-                    'properties.httpsOnly' = $true; 'properties.siteConfig.minTlsVersion' = '1.2'
+                    'properties.httpsOnly' = $true
                     'properties.functionAppConfig.runtime.name' = 'powershell'
                     'properties.functionAppConfig.runtime.version' = '7.6'
                     'properties.functionAppConfig.scaleAndConcurrency.instanceMemoryMB' = $configuration.instanceMemoryMB
@@ -1349,6 +1369,14 @@ if ($Mode -eq 'DeployFunctions') {
             Assert-FoundationProperties -Resource $resource -Expected $expected -Phase $phase
             if ($id -eq $appId) { $functionApp = $resource }
         }
+        $functionConfiguration = Invoke-AzureJson -Arguments (@(
+            'functionapp', 'config', 'show',
+            '--resource-group', $names.resourceGroup,
+            '--name', $names.functionApp
+        ) + $scope) -Phase $phase -Remediation $functionRemediation -SanitizeOutput
+        Assert-FoundationProperties -Resource $functionConfiguration -Expected @{
+            minTlsVersion = '1.2'
+        } -Phase $phase
         $principalId = if ($functionApp.identity.Contains('principalId')) { $functionApp.identity.principalId } else { $null }
         if ($principalId -notmatch '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$' -or
             [guid] $principalId -eq [guid]::Empty) {
@@ -1484,6 +1512,148 @@ if ($Mode -eq 'DeployFunctions') {
     }
 }
 
+$powerPlatformValidation = $null
+$runtimeReadiness = $null
+if ($Mode -eq 'DeployPowerPlatform') {
+    $phase = 'Logging solution'
+    $state.phases[5].status = 'Pending'
+    Save-DeploymentState -State $state -Path $resolvedStatePath
+    $solutionSource = Join-Path (Split-Path -Parent $PSScriptRoot) 'solutions\InventorySyncLogging'
+    $solutionArtifact = Join-Path ([IO.Path]::GetTempPath()) "InventorySyncLogging-$([guid]::NewGuid()).zip"
+    try {
+        Invoke-ValidationCommand -Command pac -Arguments @(
+            'auth', 'create', '--environment', $configuration.targetDataverseUrl
+        ) -Phase $phase -SanitizeOutput `
+            -Remediation 'Interactive Power Platform authentication failed. Sign in to the supplied PALP environment and retry DeployPowerPlatform.' |
+            Out-Null
+        $powerPlatformContextOutput = Invoke-ValidationCommand -Command pac -Arguments @(
+            'env', 'who', '--environment', $configuration.targetDataverseUrl, '--json'
+        ) -Phase $phase -SanitizeOutput `
+            -Remediation 'The supplied PALP environment could not be selected. Verify the Dataverse URL and interactive account access.'
+        try {
+            $powerPlatformContexts = @($powerPlatformContextOutput | ConvertFrom-Json -AsHashtable)
+        }
+        catch {
+            throw 'Logging solution: Power Platform context verification returned invalid JSON. Upgrade Power Platform CLI and retry.'
+        }
+        $powerPlatformContext = if ($powerPlatformContexts.Count -eq 1) {
+            $powerPlatformContexts[0]
+        }
+        $environmentUrlKey = @('EnvironmentUrl', 'Environment URL', 'OrganizationUrl') |
+            Where-Object { $powerPlatformContext -is [System.Collections.IDictionary] -and
+                $powerPlatformContext.Contains($_) } |
+            Select-Object -First 1
+        if (-not $environmentUrlKey) {
+            throw 'Logging solution: Power Platform context verification did not identify the active environment. Upgrade Power Platform CLI and retry.'
+        }
+        $activeEnvironment = ([string] $powerPlatformContext[$environmentUrlKey]).TrimEnd('/')
+        $expectedEnvironment = $configuration.targetDataverseUrl.TrimEnd('/')
+        if (-not $activeEnvironment.Equals($expectedEnvironment, [StringComparison]::OrdinalIgnoreCase)) {
+            throw 'Logging solution: Power Platform context target environment mismatch. Sign in interactively to the supplied PALP Dataverse URL and retry.'
+        }
+        Invoke-ValidationCommand -Command pac -Arguments @(
+            'solution', 'pack', '--zipfile', $solutionArtifact, '--folder', $solutionSource,
+            '--packagetype', 'Unmanaged', '--overwrite'
+        ) -Phase $phase -SanitizeOutput `
+            -Remediation 'Packing Inventory Sync Logging from its unpacked source failed. Correct the solution source or Power Platform CLI installation and retry.' |
+            Out-Null
+        if (-not (Test-Path -LiteralPath $solutionArtifact -PathType Leaf)) {
+            throw 'Logging solution: packing completed without producing the temporary solution archive. Verify the Power Platform CLI output and retry.'
+        }
+        Invoke-ValidationCommand -Command pac -Arguments @(
+            'solution', 'import', '--path', $solutionArtifact,
+            '--environment', $configuration.targetDataverseUrl
+        ) -Phase $phase -SanitizeOutput `
+            -Remediation 'Importing Inventory Sync Logging failed. Inspect the Dataverse solution import history, correct the reported dependency or permission issue, and retry.' |
+            Out-Null
+        $cloudChangesMade = $true
+        Invoke-ValidationCommand -Command pac -Arguments @(
+            'solution', 'publish', '--environment', $configuration.targetDataverseUrl
+        ) -Phase $phase -SanitizeOutput `
+            -Remediation 'Publishing Dataverse customizations failed. Inspect the target environment solution history and retry.' |
+            Out-Null
+        $solutionListOutput = Invoke-ValidationCommand -Command pac -Arguments @(
+            'solution', 'list', '--environment', $configuration.targetDataverseUrl, '--json'
+        ) -Phase $phase -SanitizeOutput `
+            -Remediation 'Inventory Sync Logging could not be verified after publication. Confirm the unmanaged solution exists in the target environment and retry.'
+        try {
+            $installedSolutions = @($solutionListOutput | ConvertFrom-Json -AsHashtable)
+        }
+        catch {
+            throw 'Logging solution: Power Platform CLI returned invalid solution verification data. Upgrade the CLI or inspect the target environment and retry.'
+        }
+        $loggingSolution = @($installedSolutions | Where-Object {
+            $_ -is [System.Collections.IDictionary] -and $_.UniqueName -eq 'InventorySyncLogging'
+        })
+        if ($loggingSolution.Count -ne 1 -or $loggingSolution[0].IsManaged -ne $false) {
+            throw 'Logging solution: the expected unmanaged InventorySyncLogging solution was not found after import. Inspect solution history and retry.'
+        }
+        $tableDefinitions = @(
+            @{
+                LogicalName = 'invs_syncrun'; PrimaryId = 'invs_syncrunid'
+                EntitySet = $configuration.syncRunTable
+                SourcePath = Join-Path $solutionSource 'Entities\invs_syncrun\Entity.xml'
+            }
+            @{
+                LogicalName = 'invs_synclog'; PrimaryId = 'invs_synclogid'
+                EntitySet = $configuration.syncLogTable
+                SourcePath = Join-Path $solutionSource 'Entities\invs_synclog\Entity.xml'
+            }
+        )
+        foreach ($table in $tableDefinitions) {
+            try {
+                [xml] $sourceEntity = Get-Content -LiteralPath $table.SourcePath -Raw
+                $sourceEntitySet = [string] $sourceEntity.Entity.EntityInfo.entity.EntitySetName
+            }
+            catch {
+                throw "Logging solution: source metadata for $($table.LogicalName) is invalid. Correct the unpacked solution and retry."
+            }
+            if ($sourceEntitySet -cne $table.EntitySet) {
+                throw "Logging solution: configured entity set '$($table.EntitySet)' does not match source metadata for $($table.LogicalName). Correct the deployment input and retry."
+            }
+            $fetchXml = "<fetch top='1'><entity name='$($table.LogicalName)'><attribute name='$($table.PrimaryId)' /></entity></fetch>"
+            Invoke-ValidationCommand -Command pac -Arguments @(
+                'env', 'fetch', '--environment', $configuration.targetDataverseUrl,
+                '--xml', $fetchXml, '--json'
+            ) -Phase $phase -SanitizeOutput `
+                -Remediation "The $($table.LogicalName) table or configured $($table.EntitySet) entity set is unavailable. Publish the solution and verify the configured entity-set name before retrying." |
+                Out-Null
+        }
+    }
+    finally {
+        if (Test-Path -LiteralPath $solutionArtifact) {
+            Remove-Item -LiteralPath $solutionArtifact -Force
+        }
+    }
+    $phases[5].Status = 'Completed'
+    $phases[5].NeedsRevalidation = $false
+    $state.phases[5].status = 'Completed'
+    Save-DeploymentState -State $state -Path $resolvedStatePath
+    $powerPlatformValidation = [pscustomobject] @{
+        TargetEnvironment = $configuration.targetDataverseUrl
+        SolutionUniqueName = 'InventorySyncLogging'
+        Managed = $false
+        EntitySets = @($configuration.syncRunTable, $configuration.syncLogTable)
+    }
+    $runtimeReadiness = [pscustomobject] @{
+        Status = 'Blocked'
+        TimerEnablementAllowed = $false
+        Checks = @(
+            [pscustomobject] @{ Id = 'target-application-user'; Status = 'OperatorConfirmationRequired'; Requirement = 'Confirm the runtime service principal is an application user in the target PALP environment.' }
+            [pscustomobject] @{ Id = 'target-writer-privileges'; Status = 'OperatorConfirmationRequired'; Requirement = 'Confirm organization-level target writer privileges for Environment, Komponente, Sync Run, and Sync Log.' }
+            [pscustomobject] @{ Id = 'source-application-users'; Status = 'OperatorConfirmationRequired'; Requirement = 'Confirm the runtime service principal is an application user in every included RPA source environment.' }
+            [pscustomobject] @{ Id = 'source-reader-privileges'; Status = 'OperatorConfirmationRequired'; Requirement = 'Confirm organization-level Process, User, and Team read privileges in every included RPA source environment.' }
+            [pscustomobject] @{ Id = 'environment-mappings-and-urls'; Status = 'OperatorConfirmationRequired'; Requirement = 'Confirm unique PALP Environment mappings and valid source Dataverse URLs.' }
+            [pscustomobject] @{ Id = 'active-component-alternate-key'; Status = 'OperatorConfirmationRequired'; Requirement = 'Confirm the palp_komponente.palp_id alternate key is active.' }
+            [pscustomobject] @{ Id = 'capped-smoke-run'; Status = 'OperatorConfirmationRequired'; Requirement = 'Complete and review a capped non-production smoke run before enabling either timer.' }
+        )
+    }
+    $phases[6].Status = 'Completed'
+    $phases[6].NeedsRevalidation = $false
+    $state.phases[6].status = 'Completed'
+    Save-DeploymentState -State $state -Path $resolvedStatePath
+}
+
 [pscustomobject] @{
     SchemaVersion = 1
     Mode = $Mode
@@ -1491,10 +1661,15 @@ if ($Mode -eq 'DeployFunctions') {
         'DeployFoundation' { 'FoundationValidated' }
         'DeployIdentity' { 'IdentityValidated' }
         'DeployFunctions' { 'FunctionsValidated' }
+        'DeployPowerPlatform' { 'DeploymentCompletedReadinessBlocked' }
         default { 'PlanValidated' }
     })
     CloudChangesMade = $cloudChangesMade
     DeploymentImplemented = $false
+    AzureEntraDeploymentStatus = $(if ($Mode -eq 'DeployPowerPlatform') { 'Completed' } else { 'NotEvaluated' })
+    PowerPlatformDeploymentImplemented = $true
+    PowerPlatformValidation = $powerPlatformValidation
+    RuntimeReadiness = $runtimeReadiness
     FoundationDeploymentImplemented = $true
     AzureContext = $azureContext
     Identity = $runtimeIdentity
@@ -1529,7 +1704,7 @@ if ($Mode -eq 'DeployFunctions') {
     Prerequisites = $prerequisites
     Compilation = $compilation
     Phases = $phases
-    UnresolvedValues = $(if ($Mode -eq 'DeployFunctions') { @() }
+    UnresolvedValues = $(if ($Mode -in @('DeployFunctions', 'DeployPowerPlatform')) { @() }
     elseif ($Mode -eq 'DeployIdentity') {
         @('APPLICATIONINSIGHTS_CONNECTION_STRING')
     }

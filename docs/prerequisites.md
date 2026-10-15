@@ -12,9 +12,14 @@ interactive Microsoft Graph authentication, directory-role assignment privileges
 and operator Key Vault data-plane access. `DeployFunctions` additionally deploys and
 publishes the Flex Function App with timers disabled by default. It requires Core
 Tools v4, Microsoft.Web availability, publication permissions, and Azure RBAC
-assignment privileges on the dedicated storage account and vault. Its deterministic
-names and ownership tags are separate from the existing manual setup below; do not
-use the screenshot-specific storage/vault names for an automated installation.
+assignment privileges on the dedicated storage account and vault.
+`DeployPowerPlatform` additionally requires Power Platform CLI and an interactive
+user allowed to import and publish unmanaged solutions in the supplied PALP
+environment. It deploys and verifies the logging solution, then reports the
+application-user, role, mapping, alternate-key, and smoke-run checks that remain
+manual. Its deterministic names and ownership tags are separate from the existing
+manual setup below; do not use the screenshot-specific storage/vault names for an
+automated installation.
 
 ## Overview
 
@@ -321,14 +326,22 @@ Sync Log rows can only be added after the logging solution is imported (5.3).
 
 ### 5.3 Logging solution
 
-Pack and import the separate unmanaged solution from
+For a portable installation, run `DeployPowerPlatform` as documented in the
+[deployment guide](../deploy/README.md). It packs the separate unmanaged source,
+imports and publishes it in the configured target environment, verifies both
+logging tables, and removes its temporary archive.
+
+For an existing installation outside the portable bootstrap, pack and import the
+solution manually from
 [`solutions/InventorySyncLogging`](../solutions/InventorySyncLogging/README.md):
 
 ```powershell
 pac solution pack --zipfile .\InventorySyncLogging.zip `
   --folder .\solutions\InventorySyncLogging --packagetype Unmanaged
 pac auth create --environment https://<target>.crm<N>.dynamics.com
-pac solution import --path .\InventorySyncLogging.zip
+pac solution import --path .\InventorySyncLogging.zip `
+  --environment https://<target>.crm<N>.dynamics.com
+pac solution publish --environment https://<target>.crm<N>.dynamics.com
 ```
 
 Then add the Sync Run and Sync Log privileges to the role from 5.2. Without the

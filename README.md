@@ -10,8 +10,10 @@ RBAC Key Vault, Log Analytics, and Application Insights), plus interactive
 tenant-local runtime identity provisioning, Global Reader assignment, and secure
 Key Vault credential storage. `DeployFunctions` also deploys the Flex Consumption
 workload, managed-identity roles and settings, publishes code, and verifies host
-health with timers disabled by default. Logging import and Power Platform readiness
-are not automated yet. Timer enablement, schedules, and limits are IaC-owned inputs.
+health with timers disabled by default. `DeployPowerPlatform` packs the logging
+solution from source, imports, publishes, and verifies it in the supplied PALP
+environment, then reports the remaining manual readiness blockers without claiming
+the sync is ready. Timer enablement, schedules, and limits are IaC-owned inputs.
 
 Start with the [prerequisites](docs/prerequisites.md): Azure resources, Key Vault,
 Entra and Dataverse permissions, and the values to collect before deployment.

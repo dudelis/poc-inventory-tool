@@ -12,7 +12,9 @@ identity and Key Vault credential with `DeployIdentity`. The package documents i
 interactive Graph permissions, required operator vault role, and resumable credential
 recovery. `DeployFunctions` also deploys/publishes the Flex workload, assigns managed
 identity storage/vault roles, and validates host health with timers disabled by
-default. Power Platform setup still requires the manual steps here. Use the
+default. `DeployPowerPlatform` then imports and verifies the logging solution and
+returns the remaining manual readiness checks. Power Platform application users,
+roles, mappings, and smoke validation still require the manual steps here. Use the
 bootstrap's reported resource names, not the existing manual installation's names.
 
 Both timers start singleton Durable orchestrations. They use one Entra service principal
@@ -74,12 +76,31 @@ Before the first run, confirm that:
   `management.azure.com`, the target Dataverse URL, and every included source
   Dataverse URL.
 
-## 2. Import the logging solution
+## 2. Deploy the logging solution
 
-The logging solution is separate from PALP and must be imported into the **target**
-Dataverse environment before a smoke run.
+The logging solution is separate from PALP and must be deployed into the **target**
+Dataverse environment before a smoke run. For portable installations, keep both
+timer flags disabled and use the bootstrap from the repository root:
 
-From the repository root, use Power Platform CLI to pack the unmanaged source:
+```powershell
+$deployment = .\deploy\Invoke-InventoryDeployment.ps1 `
+  -Mode DeployPowerPlatform `
+  -TenantId <tenant-id> `
+  -ConfigurationPath .\deploy\.local\parameters.json `
+  -StatePath .\deploy\.local\deployment.state.json
+
+$deployment.PowerPlatformValidation
+$deployment.RuntimeReadiness.Checks | Format-Table Id, Status, Requirement
+```
+
+The command authenticates interactively to the configured target URL, packs the
+unmanaged source into a temporary archive, imports and publishes it, and verifies
+the installed solution plus both logging tables. It removes the temporary archive
+after success or failure. A successful command reports Azure/Entra and logging
+deployment completion separately from blocked runtime readiness.
+
+For a pre-existing installation not managed by the portable bootstrap, use Power
+Platform CLI manually:
 
 ```powershell
 pac solution pack --zipfile .\InventorySyncLogging.zip `
@@ -91,7 +112,8 @@ or with an authenticated Power Platform CLI:
 
 ```powershell
 pac auth create --environment https://contoso.crm.dynamics.com
-pac solution import --path .\InventorySyncLogging.zip
+pac solution import --path .\InventorySyncLogging.zip --environment https://contoso.crm.dynamics.com
+pac solution publish --environment https://contoso.crm.dynamics.com
 ```
 
 Verify that **Sync Run** and **Sync Log** exist and that their entity-set names are
@@ -111,10 +133,11 @@ Dataverse logging fails and the failure is written to Application Insights.
 
 ## 3. Configure the Function App
 
-For portable installations, edit deployment inputs and rerun `DeployFunctions` as
-described in the [deployment guide](../deploy/README.md); do not edit IaC-managed
-settings in the portal. For an existing manually managed installation, the following
-values are under **Function App > Settings > Environment variables > App settings**.
+For portable installations, complete `DeployPowerPlatform` and every reported
+manual readiness check before editing deployment inputs and rerunning
+`DeployFunctions` to enable timers; do not edit IaC-managed settings in the portal.
+For an existing manually managed installation, the following values are under
+**Function App > Settings > Environment variables > App settings**.
 Examples and historical local defaults below are illustrative.
 
 | Setting | Required | Purpose and implemented behavior | Example |
@@ -175,11 +198,13 @@ Activity, a propagated ID is retained; only a direct call with neither uses a ne
 
 ## 4. Deploy the code
 
-For a portable installation, use `DeployFunctions` from the
-[deployment guide](../deploy/README.md) instead of publishing/configuring manually.
-It deploys disabled timers, validates infrastructure/RBAC/reference settings,
-publishes from `src`, and checks functions, timer states, and host health. Keep
-timers disabled until the remaining Power Platform setup and smoke runs are complete.
+For a portable installation, run `DeployFunctions` and then `DeployPowerPlatform`
+from the [deployment guide](../deploy/README.md) instead of
+publishing/configuring manually. The first command deploys disabled timers, validates
+infrastructure/RBAC/reference settings, publishes from `src`, and checks Functions
+and host health. The second deploys and verifies logging and returns the blocking
+manual readiness checklist. Keep timers disabled until that checklist and the smoke
+run are complete.
 
 For an existing manually managed installation, install Azure Functions Core Tools v4, Azure CLI, PowerShell, and Power Platform CLI
 (`pac`) on the deployment workstation. Authenticate to the subscription containing the

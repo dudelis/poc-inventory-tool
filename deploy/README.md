@@ -1,4 +1,4 @@
-# Inventory deployment: planning, foundation, identity, and Functions
+# Inventory deployment: Azure, Functions, and logging
 
 The portable package supports offline planning (#11) and explicit Azure foundation
 deployment (#12), plus tenant-local runtime identity and credential provisioning
@@ -8,8 +8,9 @@ authenticates interactively with Microsoft Graph, establishes the managed app an
 service principal, assigns Global Reader, and stores a bounded credential in Key Vault.
 `DeployFunctions` runs those phases, deploys the Linux Flex Consumption workload,
 publishes the repository Functions, and validates the host with both timers disabled
-by default (#14). Solution import and Power Platform readiness remain subsequent
-tickets under #10.
+by default (#14). `DeployPowerPlatform` then packs and imports the unmanaged logging
+solution, publishes and verifies it in the supplied PALP environment, and returns the
+manual runtime-readiness blockers separately from deployment success (#15).
 
 [main.bicep](./main.bicep) declares the shared input contract and has no resources.
 The bootstrap deploys [foundation-group.bicep](./foundation-group.bicep) at subscription
@@ -277,11 +278,68 @@ command/state. The workflow is fail-fast rather than an unbounded polling loop.
 Before changing timer state, make sure no existing orchestration is running: disabling
 timers does not cancel work already in progress.
 
+## Deploy logging and report runtime readiness
+
+`DeployPowerPlatform` runs and revalidates the Azure, identity, credential, and
+Functions phases before crossing the supported Power Platform boundary. Install
+Power Platform CLI yourself and use an interactive account that can import and
+publish unmanaged solutions in the supplied existing PALP environment. The bootstrap
+does not accept Power Platform administrator credentials.
+
+Both timer inputs must still be `false`; this mode refuses enabled timers before any
+cloud mutation. Run it with the same configuration and state used for
+`DeployFunctions`:
+
+```powershell
+$deployment = .\deploy\Invoke-InventoryDeployment.ps1 `
+    -Mode DeployPowerPlatform `
+    -TenantId <tenant-id> `
+    -ConfigurationPath .\deploy\.local\parameters.json `
+    -StatePath .\deploy\.local\deployment.state.json
+
+$deployment | Select-Object Status, AzureEntraDeploymentStatus, CloudChangesMade
+$deployment.PowerPlatformValidation
+$deployment.RuntimeReadiness.Checks | Format-Table Id, Status, Requirement
+```
+
+The bootstrap runs interactive `pac auth create` against `targetDataverseUrl` and
+uses `pac env who` to reject a context targeting another environment. It packs
+`solutions/InventorySyncLogging` into a unique temporary archive on every run,
+imports the unmanaged archive into the explicit target URL, publishes
+customizations, verifies the installed unmanaged solution, and queries both logging
+tables. The configured Sync Run and Sync Log entity-set names must match the unpacked
+solution metadata. The temporary archive is removed whether packing, import,
+publication, or verification succeeds or fails; the committed root archive is never
+used by this mode.
+
+Successful automation returns `DeploymentCompletedReadinessBlocked`.
+`AzureEntraDeploymentStatus=Completed` and completed logging/readiness phases mean
+the supported deployment work succeeded; they do **not** mean inventory writes are
+ready. `RuntimeReadiness.Status=Blocked` and
+`TimerEnablementAllowed=false` remain in force until an operator confirms:
+
+1. the target application user;
+2. organization-level target writer privileges;
+3. application users in every included RPA source;
+4. organization-level source reader privileges;
+5. unique PALP Environment mappings and valid source URLs;
+6. the active `palp_komponente.palp_id` alternate key; and
+7. a reviewed capped smoke run in a non-production environment.
+
+The bootstrap deliberately does not create Dataverse environments, import the core
+PALP solution, create application users, assign security roles, populate Environment
+rows or URLs, activate the alternate key, or run an inventory sync. Complete those
+tenant-sensitive checks using the operations guide. Authentication, packing, import,
+publication, and verification failures stop immediately, keep the logging phase
+pending, retain earlier non-secret completion metadata, and can be retried with the
+same configuration and state.
+
 ### Deliberate timer enablement and operational changes
 
-After completing Power Platform setup and smoke checks, edit the ignored input JSON
-and rerun `Plan`, then `DeployFunctions`. Use a **new state filename** when input values
-change; the strict configuration fingerprint intentionally rejects an old state.
+After `DeployPowerPlatform` succeeds and every reported manual readiness check and
+smoke run is complete, edit the ignored input JSON and rerun `Plan`, then
+`DeployFunctions`. Use a **new state filename** when input values change; the strict
+configuration fingerprint intentionally rejects an old state.
 Resource names and managed identity/credential discovery remain stable.
 
 | Input | Default | Effect |
@@ -366,7 +424,8 @@ Existing state is strictly validated. Unknown fields, unknown statuses, unexpect
 phase order, and a configuration mismatch fail without rewriting the file. Use a
 separate state file when deliberately changing configuration. Do not manually
 mark phases complete to bypass checks. Secrets, tokens, Dataverse URLs, and
-full identity objects do not belong in state. `DeployIdentity` and `DeployFunctions` additionally retain
+full identity objects do not belong in state. `DeployIdentity`, `DeployFunctions`,
+and `DeployPowerPlatform` additionally retain
 strictly allowlisted identity IDs and non-secret credential expiry/version/recovery
 metadata; it never stores a credential value.
 
@@ -374,8 +433,9 @@ The ordered workflow is preflight, Azure foundation, runtime identity,
 runtime credential, Function deployment, logging solution, and readiness
 validation. Dependencies are included in the plan. `DeployFoundation` executes
 only the first two phases; `DeployIdentity` executes the first four;
-`DeployFunctions` executes the first five. Logging import and readiness validation
-are not yet implemented.
+`DeployFunctions` executes the first five; `DeployPowerPlatform` executes all seven.
+Completing readiness validation means the blocking checklist was produced, not that
+the operator-confirmed items passed.
 
 ## Tests and command boundary
 
@@ -397,7 +457,8 @@ credential clock. Sensitive adapters run in an isolated runspace and should capt
 any required fake state in a closure. Tests never contact Azure or Graph.
 Do not use test adapters to bypass validation in normal operation.
 
-The bootstrap returns one plan/foundation/identity/Functions result object or raises a terminating error. Native
+The bootstrap returns one plan/foundation/identity/Functions/Power Platform result
+object or raises a terminating error. Native
 compiler errors are reported with their phase and remediation; later phases
 never run after failure. When invoked using `pwsh -File`, a terminating error
 returns a nonzero process exit code.

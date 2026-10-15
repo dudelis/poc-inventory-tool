@@ -269,6 +269,8 @@ Describe 'Runtime identity and Function deployment' {
                 Parameters = $null
                 Published = $false
                 PrincipalId = 'dddddddd-dddd-dddd-dddd-dddddddddddd'
+                ResourceLocation = 'northeurope'
+                MinTlsVersion = '1.2'
                 ConnectionString = 'InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://example.test/'
             }
             $baseRunner = $azureRunner
@@ -307,13 +309,13 @@ Describe 'Runtime identity and Function deployment' {
                         id = $Arguments[3]
                         name = $(if ($isApp) { $resourceNames.functionApp } else { $resourceNames.hostingPlan })
                         type = $(if ($isApp) { 'Microsoft.Web/sites' } else { 'Microsoft.Web/serverfarms' })
-                        location = 'northeurope'; tags = $resourceTags; sku = @{ name = 'FC1'; tier = 'FlexConsumption' }
+                        location = $functionState.ResourceLocation; tags = $resourceTags; sku = @{ name = 'FC1'; tier = 'FlexConsumption' }
                         kind = 'functionapp,linux'
                         identity = @{ type = 'SystemAssigned'; principalId = $functionState.PrincipalId }
                         properties = @{
                             provisioningState = 'Succeeded'; state = 'Running'; reserved = $true
                             serverFarmId = "/subscriptions/$sub/resourceGroups/$($resourceNames.resourceGroup)/providers/Microsoft.Web/serverfarms/$($resourceNames.hostingPlan)"
-                            httpsOnly = $true; siteConfig = @{ minTlsVersion = '1.2' }
+                            httpsOnly = $true; siteConfig = @{ minTlsVersion = $null }
                             functionAppConfig = @{
                                 runtime = @{ name = 'powershell'; version = '7.6' }
                                 scaleAndConcurrency = @{
@@ -329,6 +331,13 @@ Describe 'Runtime identity and Function deployment' {
                         }
                     }
                     return @{ ExitCode = 0; Output = ($resource | ConvertTo-Json -Depth 10) }
+                }
+                if ($Arguments[0..2] -join ' ' -eq 'functionapp config show') {
+                    $callLog.Add("azure:$joined")
+                    return @{
+                        ExitCode = 0
+                        Output = (@{ minTlsVersion = $functionState.MinTlsVersion } | ConvertTo-Json)
+                    }
                 }
                 if ($Arguments[0..2] -join ' ' -eq 'role assignment list') {
                     $callLog.Add("azure:$joined")
@@ -409,6 +418,24 @@ Describe 'Runtime identity and Function deployment' {
             ($result | ConvertTo-Json -Depth 30) | Should -Not -Match $generatedSecret
             $saved = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json -AsHashtable
             $saved.phases[4].status | Should -Be 'Completed'
+        }
+
+        It 'accepts the Azure display name for a configured canonical resource location' {
+            $functionCloud.ResourceLocation = 'North Europe'
+
+            $result = & $bootstrapPath -ConfigurationPath $configurationPath -Mode DeployFunctions `
+                -TenantId $tenantId -StatePath $statePath -CommandRunner $functionRunner -GraphRunner $graphRunner
+
+            $result.Status | Should -Be 'FunctionsValidated'
+            $result.Phases[4].Status | Should -Be 'Completed'
+        }
+
+        It 'validates Flex TLS through the Function configuration API' {
+            $result = & $bootstrapPath -ConfigurationPath $configurationPath -Mode DeployFunctions `
+                -TenantId $tenantId -StatePath $statePath -CommandRunner $functionRunner -GraphRunner $graphRunner
+
+            $result.Status | Should -Be 'FunctionsValidated'
+            ($calls -join "`n") | Should -Match 'azure:functionapp config show'
         }
 
         It 'enables timers only through a final incremental IaC update after publication and host validation' {
@@ -566,6 +593,291 @@ Describe 'Runtime identity and Function deployment' {
             @($graphRequests | Where-Object Operation -in @(
                 'CreateApplication', 'CreateServicePrincipal', 'AssignGlobalReader', 'CreatePassword'
             )) | Should -HaveCount 0
+        }
+
+        It 'deploys the source logging solution and reports the manual readiness blockers' {
+            $baseFunctionRunner = $functionRunner
+            $powerPlatformCalls = [System.Collections.Generic.List[object]]::new()
+            $artifactState = @{ Path = $null }
+            $powerPlatformRunner = {
+                param($Command, $Arguments, $SensitiveArguments)
+                if ($Command -ne 'pac') {
+                    return & $baseFunctionRunner $Command $Arguments $SensitiveArguments
+                }
+                $powerPlatformCalls.Add([pscustomobject] @{
+                    Arguments = @($Arguments)
+                    Joined = $Arguments -join ' '
+                })
+                if ($Arguments[0] -eq '--version') {
+                    return @{ ExitCode = 0; Output = '1.45.2' }
+                }
+                if ($Arguments[0..1] -join ' ' -eq 'solution pack') {
+                    $artifactState.Path = $Arguments[$Arguments.IndexOf('--zipfile') + 1]
+                    Set-Content -LiteralPath $artifactState.Path -Value 'temporary solution archive'
+                }
+                $output = if ($Arguments[0..1] -join ' ' -eq 'env who') {
+                    '{"EnvironmentUrl":"https://tenant.crm4.dynamics.com"}'
+                }
+                elseif ($Arguments[0..1] -join ' ' -eq 'solution list') {
+                    '[{"UniqueName":"InventorySyncLogging","IsManaged":false}]'
+                }
+                else { '{}' }
+                return @{ ExitCode = 0; Output = $output }
+            }.GetNewClosure()
+
+            $result = & $bootstrapPath -ConfigurationPath $configurationPath -Mode DeployPowerPlatform `
+                -TenantId $tenantId -StatePath $statePath -CommandRunner $powerPlatformRunner `
+                -GraphRunner $graphRunner
+
+            $result.Status | Should -Be 'DeploymentCompletedReadinessBlocked'
+            $result.AzureEntraDeploymentStatus | Should -Be 'Completed'
+            $result.PowerPlatformValidation.TargetEnvironment | Should -Be 'https://tenant.crm4.dynamics.com'
+            $result.PowerPlatformValidation.SolutionUniqueName | Should -Be 'InventorySyncLogging'
+            $result.PowerPlatformValidation.EntitySets | Should -Be @('invs_syncruns', 'invs_synclogs')
+            $result.RuntimeReadiness.Status | Should -Be 'Blocked'
+            $result.RuntimeReadiness.TimerEnablementAllowed | Should -BeFalse
+            $result.RuntimeReadiness.Checks.Id | Should -Be @(
+                'target-application-user', 'target-writer-privileges',
+                'source-application-users', 'source-reader-privileges',
+                'environment-mappings-and-urls', 'active-component-alternate-key',
+                'capped-smoke-run'
+            )
+            $result.RuntimeReadiness.Checks.Status | Select-Object -Unique |
+                Should -Be 'OperatorConfirmationRequired'
+            $result.Phases[0..6].Status | Should -Not -Contain 'Pending'
+
+            $joinedCalls = @($powerPlatformCalls.Joined)
+            $authIndex = [array]::IndexOf($joinedCalls, (
+                'auth create --environment https://tenant.crm4.dynamics.com'
+            ))
+            $packIndex = [array]::FindIndex($joinedCalls, [Predicate[string]] {
+                param($call) $call -like 'solution pack*--folder*solutions\InventorySyncLogging*--packagetype Unmanaged*'
+            })
+            $importIndex = [array]::FindIndex($joinedCalls, [Predicate[string]] {
+                param($call) $call -like 'solution import*--environment https://tenant.crm4.dynamics.com*'
+            })
+            $publishIndex = [array]::FindIndex($joinedCalls, [Predicate[string]] {
+                param($call) $call -eq 'solution publish --environment https://tenant.crm4.dynamics.com'
+            })
+            $solutionVerifyIndex = [array]::FindIndex($joinedCalls, [Predicate[string]] {
+                param($call) $call -eq 'solution list --environment https://tenant.crm4.dynamics.com --json'
+            })
+            $tableVerifyIndexes = @(
+                for ($index = 0; $index -lt $joinedCalls.Count; $index++) {
+                    if ($joinedCalls[$index] -like 'env fetch --environment https://tenant.crm4.dynamics.com*') {
+                        $index
+                    }
+                }
+            )
+            $authIndex | Should -BeGreaterThan -1
+            $packIndex | Should -BeGreaterThan $authIndex
+            $importIndex | Should -BeGreaterThan $packIndex
+            $publishIndex | Should -BeGreaterThan $importIndex
+            $solutionVerifyIndex | Should -BeGreaterThan $publishIndex
+            $tableVerifyIndexes | Should -HaveCount 2
+            $tableVerifyIndexes[0] | Should -BeGreaterThan $solutionVerifyIndex
+            $tableVerifyIndexes[1] | Should -BeGreaterThan $tableVerifyIndexes[0]
+            $artifactState.Path | Should -Not -BeNullOrEmpty
+            $artifactState.Path | Should -Not -Exist
+
+            $saved = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json -AsHashtable
+            $saved.phases[5].status | Should -Be 'Completed'
+            $saved.phases[6].status | Should -Be 'Completed'
+        }
+
+        It 'refuses timer enablement until the reported readiness checks are confirmed' {
+            $configuration = Get-Content -LiteralPath $configurationPath -Raw |
+                ConvertFrom-Json -AsHashtable
+            $configuration.agentTimerEnabled = $true
+            $configuration | ConvertTo-Json | Set-Content -LiteralPath $configurationPath
+            $baseFunctionRunner = $functionRunner
+            $powerPlatformCalls = [System.Collections.Generic.List[string]]::new()
+            $powerPlatformRunner = {
+                param($Command, $Arguments, $SensitiveArguments)
+                if ($Command -eq 'pac') {
+                    $powerPlatformCalls.Add($Arguments -join ' ')
+                    return @{ ExitCode = 0; Output = '1.45.2' }
+                }
+                & $baseFunctionRunner $Command $Arguments $SensitiveArguments
+            }.GetNewClosure()
+
+            { & $bootstrapPath -ConfigurationPath $configurationPath -Mode DeployPowerPlatform `
+                    -TenantId $tenantId -StatePath $statePath -CommandRunner $powerPlatformRunner `
+                    -GraphRunner $graphRunner } |
+                Should -Throw '*Readiness validation*timers must remain disabled*'
+
+            $functionCloud.Published | Should -BeFalse
+            @($calls | Where-Object { $_ -like 'azure:deployment*create*' }) |
+                Should -HaveCount 0
+            @($powerPlatformCalls | Where-Object { $_ -notlike '--version' }) |
+                Should -HaveCount 0
+            $statePath | Should -Not -Exist
+        }
+
+        It 'stops before solution mutation when the interactive Power Platform context targets another environment' {
+            $baseFunctionRunner = $functionRunner
+            $powerPlatformCalls = [System.Collections.Generic.List[string]]::new()
+            $mismatchedContextRunner = {
+                param($Command, $Arguments, $SensitiveArguments)
+                if ($Command -ne 'pac') {
+                    return & $baseFunctionRunner $Command $Arguments $SensitiveArguments
+                }
+                $joined = $Arguments -join ' '
+                $powerPlatformCalls.Add($joined)
+                $output = if ($Arguments[0] -eq '--version') { '1.45.2' }
+                elseif ($Arguments[0..1] -join ' ' -eq 'env who') {
+                    '{"EnvironmentUrl":"https://another.crm4.dynamics.com"}'
+                }
+                else { '{}' }
+                return @{ ExitCode = 0; Output = $output }
+            }.GetNewClosure()
+
+            { & $bootstrapPath -ConfigurationPath $configurationPath -Mode DeployPowerPlatform `
+                    -TenantId $tenantId -StatePath $statePath -CommandRunner $mismatchedContextRunner `
+                    -GraphRunner $graphRunner } |
+                Should -Throw '*Logging solution*Power Platform context*target environment mismatch*'
+
+            $functionCloud.Published | Should -BeTrue
+            @($powerPlatformCalls | Where-Object {
+                $_ -like 'solution pack*' -or $_ -like 'solution import*' -or
+                $_ -like 'solution publish*'
+            }) | Should -HaveCount 0
+            $saved = Get-Content -LiteralPath $statePath -Raw |
+                ConvertFrom-Json -AsHashtable
+            $saved.phases[4].status | Should -Be 'Completed'
+            $saved.phases[5].status | Should -Be 'Pending'
+        }
+
+        It 'fails fast and removes the temporary archive when <Stage> fails' -ForEach @(
+            @{
+                Stage = 'authentication'; FailurePattern = 'auth create*'
+                ErrorPattern = '*Logging solution*Interactive Power Platform authentication failed*'
+                ForbiddenPattern = 'env who*'
+            }
+            @{
+                Stage = 'packing'; FailurePattern = 'solution pack*'
+                ErrorPattern = '*Logging solution*Packing Inventory Sync Logging*failed*'
+                ForbiddenPattern = 'solution import*'
+            }
+            @{
+                Stage = 'import'; FailurePattern = 'solution import*'
+                ErrorPattern = '*Logging solution*Importing Inventory Sync Logging failed*'
+                ForbiddenPattern = 'solution publish*'
+            }
+            @{
+                Stage = 'publication'; FailurePattern = 'solution publish*'
+                ErrorPattern = '*Logging solution*Publishing Dataverse customizations failed*'
+                ForbiddenPattern = 'solution list*'
+            }
+            @{
+                Stage = 'verification'; FailurePattern = 'solution list*'
+                ErrorPattern = '*Logging solution*could not be verified*'
+                ForbiddenPattern = 'env fetch*'
+            }
+        ) {
+            $baseFunctionRunner = $functionRunner
+            $powerPlatformCalls = [System.Collections.Generic.List[string]]::new()
+            $artifactPaths = [System.Collections.Generic.List[string]]::new()
+            $failingPowerPlatformRunner = {
+                param($Command, $Arguments, $SensitiveArguments)
+                if ($Command -ne 'pac') {
+                    return & $baseFunctionRunner $Command $Arguments $SensitiveArguments
+                }
+                $joined = $Arguments -join ' '
+                $powerPlatformCalls.Add($joined)
+                if ($Arguments[0..1] -join ' ' -eq 'solution pack') {
+                    $path = $Arguments[$Arguments.IndexOf('--zipfile') + 1]
+                    $artifactPaths.Add($path)
+                    Set-Content -LiteralPath $path -Value 'partial temporary archive'
+                }
+                if ($joined -like $FailurePattern) {
+                    return @{ ExitCode = 1; Output = "simulated $Stage failure" }
+                }
+                $output = if ($Arguments[0] -eq '--version') { '1.45.2' }
+                elseif ($Arguments[0..1] -join ' ' -eq 'env who') {
+                    '{"EnvironmentUrl":"https://tenant.crm4.dynamics.com"}'
+                }
+                elseif ($Arguments[0..1] -join ' ' -eq 'solution list') {
+                    '[{"UniqueName":"InventorySyncLogging","IsManaged":false}]'
+                }
+                else { '{}' }
+                return @{ ExitCode = 0; Output = $output }
+            }.GetNewClosure()
+
+            { & $bootstrapPath -ConfigurationPath $configurationPath -Mode DeployPowerPlatform `
+                    -TenantId $tenantId -StatePath $statePath -CommandRunner $failingPowerPlatformRunner `
+                    -GraphRunner $graphRunner } |
+                Should -Throw $ErrorPattern
+
+            @($powerPlatformCalls | Where-Object { $_ -like $ForbiddenPattern }) |
+                Should -HaveCount 0
+            foreach ($artifactPath in $artifactPaths) {
+                $artifactPath | Should -Not -Exist
+            }
+            $saved = Get-Content -LiteralPath $statePath -Raw |
+                ConvertFrom-Json -AsHashtable
+            $saved.phases[4].status | Should -Be 'Completed'
+            $saved.phases[5].status | Should -Be 'Pending'
+            $saved.phases[6].status | Should -Be 'Pending'
+        }
+
+        It 'resumes safely after a transient solution import failure' {
+            $baseFunctionRunner = $functionRunner
+            $powerPlatformCalls = [System.Collections.Generic.List[string]]::new()
+            $artifactPaths = [System.Collections.Generic.List[string]]::new()
+            $failureState = @{ ImportPending = $true }
+            $resumablePowerPlatformRunner = {
+                param($Command, $Arguments, $SensitiveArguments)
+                if ($Command -ne 'pac') {
+                    return & $baseFunctionRunner $Command $Arguments $SensitiveArguments
+                }
+                $joined = $Arguments -join ' '
+                $powerPlatformCalls.Add($joined)
+                if ($Arguments[0..1] -join ' ' -eq 'solution pack') {
+                    $path = $Arguments[$Arguments.IndexOf('--zipfile') + 1]
+                    $artifactPaths.Add($path)
+                    Set-Content -LiteralPath $path -Value 'temporary solution archive'
+                }
+                if ($Arguments[0..1] -join ' ' -eq 'solution import' -and
+                    $failureState.ImportPending) {
+                    $failureState.ImportPending = $false
+                    return @{ ExitCode = 1; Output = 'transient import failure' }
+                }
+                $output = if ($Arguments[0] -eq '--version') { '1.45.2' }
+                elseif ($Arguments[0..1] -join ' ' -eq 'env who') {
+                    '{"EnvironmentUrl":"https://tenant.crm4.dynamics.com"}'
+                }
+                elseif ($Arguments[0..1] -join ' ' -eq 'solution list') {
+                    '[{"UniqueName":"InventorySyncLogging","IsManaged":false}]'
+                }
+                else { '{}' }
+                return @{ ExitCode = 0; Output = $output }
+            }.GetNewClosure()
+
+            { & $bootstrapPath -ConfigurationPath $configurationPath -Mode DeployPowerPlatform `
+                    -TenantId $tenantId -StatePath $statePath -CommandRunner $resumablePowerPlatformRunner `
+                    -GraphRunner $graphRunner } |
+                Should -Throw '*Logging solution*Importing Inventory Sync Logging failed*'
+
+            $resumed = & $bootstrapPath -ConfigurationPath $configurationPath -Mode DeployPowerPlatform `
+                -TenantId $tenantId -StatePath $statePath -CommandRunner $resumablePowerPlatformRunner `
+                -GraphRunner $graphRunner
+
+            $resumed.Status | Should -Be 'DeploymentCompletedReadinessBlocked'
+            @($powerPlatformCalls | Where-Object { $_ -like 'solution pack*' }) |
+                Should -HaveCount 2
+            @($powerPlatformCalls | Where-Object { $_ -like 'solution import*' }) |
+                Should -HaveCount 2
+            foreach ($artifactPath in $artifactPaths) {
+                $artifactPath | Should -Not -Exist
+            }
+            @($graphRequests | Where-Object Operation -in @(
+                'CreateApplication', 'CreateServicePrincipal', 'AssignGlobalReader', 'CreatePassword'
+            )) | Should -HaveCount 3
+            $saved = Get-Content -LiteralPath $statePath -Raw |
+                ConvertFrom-Json -AsHashtable
+            $saved.phases[5].status | Should -Be 'Completed'
+            $saved.phases[6].status | Should -Be 'Completed'
         }
     }
 

@@ -103,7 +103,7 @@ Rows written by legacy processes (all other component types) are never read, cha
 
 - **Two separate implementations**: one for RPA (desktop flows) and one for Agent Builder agents. Each consists of a set of functions and is deployed and scheduled independently.
 - **Runtime**: Azure Functions, PowerShell 7.6, Flex Consumption plan, Durable Functions with the standalone PowerShell Durable SDK.
-- **Infrastructure** (Function App, Storage, Application Insights, Key Vault, role assignments, app settings) is provisioned and configured **manually by the customer**. The deliverable is code, a list of app settings, and the logging solution.
+- **Infrastructure** (Function App, Storage, Application Insights, Key Vault, role assignments, and app settings) is provisioned by the portable Bicep/PowerShell deployment package. The package also deploys the logging solution; Dataverse application users, security roles, PALP data mappings, and runtime-readiness confirmation remain explicit customer operations.
 - **Shared PowerShell module** used by both implementations, containing:
   - an **HTTP transport**: the single function through which every REST call goes (token, Resource Graph, Dataverse); it handles retries and honours Retry-After on 429 and Dataverse service-protection errors;
   - **token acquisition** with client credentials, cached per resource;
