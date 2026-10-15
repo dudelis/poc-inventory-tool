@@ -14,7 +14,7 @@ BeforeAll {
     }
 }
 
-Describe 'Runtime identity deployment' {
+Describe 'Runtime identity and Function deployment' {
     BeforeEach {
         $configuration = Get-Content -LiteralPath $examplePath -Raw | ConvertFrom-Json -AsHashtable
         $configuration.subscriptionId = $subscriptionId
@@ -256,6 +256,316 @@ Describe 'Runtime identity deployment' {
             $resource.id = "/subscriptions/$subscriptionId/resourceGroups/$($group.name)/providers/$($resource.type)/$($resource.name)"
             $resource.location = 'northeurope'
             $resource.tags = $tags.Clone()
+        }
+    }
+
+    Describe 'Function deployment' {
+        BeforeEach {
+            $configuration = Get-Content -LiteralPath $configurationPath -Raw | ConvertFrom-Json -AsHashtable
+            $configuration.agentCreatedIn = 'Copilot Studio Lite'
+            $configuration.targetDataverseUrl = 'https://tenant.crm4.dynamics.com'
+            $configuration | ConvertTo-Json | Set-Content -LiteralPath $configurationPath
+            $script:functionCloud = @{
+                Parameters = $null
+                Published = $false
+                PrincipalId = 'dddddddd-dddd-dddd-dddd-dddddddddddd'
+                ConnectionString = 'InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://example.test/'
+            }
+            $baseRunner = $azureRunner
+            $functionState = $functionCloud
+            $callLog = $calls
+            $resourceNames = $plan.ResourceNames
+            $resourceTags = $tags
+            $sub = $subscriptionId
+            $script:functionRunner = {
+                param($Command, $Arguments, $SensitiveArguments)
+                $joined = $Arguments -join ' '
+                if ($Command -eq 'func') {
+                    $callLog.Add("func:$joined")
+                    if ($Arguments[0] -eq '--version') {
+                        return @{ ExitCode = 0; Output = '4.8.0' }
+                    }
+                    if ($functionState.Parameters.parameters.applicationSettings.value.'AzureWebJobs.AgentSyncTimer.Disabled' -ne 'true' -or
+                        $functionState.Parameters.parameters.applicationSettings.value.'AzureWebJobs.RpaSyncTimer.Disabled' -ne 'true') {
+                        throw 'Timers must be disabled until code and host validation finish.'
+                    }
+                    $functionState.Published = $true
+                    return @{ ExitCode = 0; Output = 'Published' }
+                }
+                if ($Arguments[0..2] -join ' ' -match '^deployment group (validate|create)$' -and
+                    $joined -match 'functions.bicep') {
+                    $callLog.Add("azure:$joined")
+                    $file = $Arguments[$Arguments.IndexOf('--parameters') + 1].TrimStart('@')
+                    $functionState.Parameters = Get-Content -LiteralPath $file -Raw | ConvertFrom-Json -AsHashtable
+                    return @{ ExitCode = 0; Output = '{"properties":{"provisioningState":"Succeeded"}}' }
+                }
+                if ($Arguments[0] -eq 'resource' -and $Arguments[1] -eq 'show' -and
+                    $joined -match '/Microsoft.Web/') {
+                    $callLog.Add("azure:$joined")
+                    $isApp = $joined -match '/sites/'
+                    $resource = @{
+                        id = $Arguments[3]
+                        name = $(if ($isApp) { $resourceNames.functionApp } else { $resourceNames.hostingPlan })
+                        type = $(if ($isApp) { 'Microsoft.Web/sites' } else { 'Microsoft.Web/serverfarms' })
+                        location = 'northeurope'; tags = $resourceTags; sku = @{ name = 'FC1'; tier = 'FlexConsumption' }
+                        kind = 'functionapp,linux'
+                        identity = @{ type = 'SystemAssigned'; principalId = $functionState.PrincipalId }
+                        properties = @{
+                            provisioningState = 'Succeeded'; state = 'Running'; reserved = $true
+                            serverFarmId = "/subscriptions/$sub/resourceGroups/$($resourceNames.resourceGroup)/providers/Microsoft.Web/serverfarms/$($resourceNames.hostingPlan)"
+                            httpsOnly = $true; siteConfig = @{ minTlsVersion = '1.2' }
+                            functionAppConfig = @{
+                                runtime = @{ name = 'powershell'; version = '7.6' }
+                                scaleAndConcurrency = @{
+                                    instanceMemoryMB = $functionState.Parameters.parameters.instanceMemoryMB.value
+                                    maximumInstanceCount = $functionState.Parameters.parameters.maximumInstanceCount.value
+                                }
+                                deployment = @{ storage = @{
+                                    type = 'blobContainer'
+                                    value = "https://$($resourceNames.storage).blob.core.windows.net/$($resourceNames.deploymentContainer)"
+                                    authentication = @{ type = 'SystemAssignedIdentity' }
+                                } }
+                            }
+                        }
+                    }
+                    return @{ ExitCode = 0; Output = ($resource | ConvertTo-Json -Depth 10) }
+                }
+                if ($Arguments[0..2] -join ' ' -eq 'role assignment list') {
+                    $callLog.Add("azure:$joined")
+                    $scope = $Arguments[$Arguments.IndexOf('--scope') + 1]
+                    $roleIds = if ($scope -match '/vaults/') { @('4633458b-17de-408a-b874-0445c86b69e6') }
+                    else { @(
+                        'b7e6dc6d-f1e8-4753-8033-0f276bb0955b',
+                        '974c5e8b-45b9-4653-ba55-5f855dd0fb88',
+                        '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3'
+                    ) }
+                    $assignments = @($roleIds | ForEach-Object { @{
+                        principalId = $functionState.PrincipalId; scope = $scope
+                        roleDefinitionId = "/subscriptions/$sub/providers/Microsoft.Authorization/roleDefinitions/$_"
+                    } })
+                    return @{ ExitCode = 0; Output = (ConvertTo-Json -InputObject $assignments) }
+                }
+                if ($Arguments[0] -eq 'rest') {
+                    $callLog.Add("azure:$joined")
+                    $output = switch -Regex ($joined) {
+                        '/config/appsettings/list' {
+                            $appSettings = $functionState.Parameters.parameters.applicationSettings.value
+                            $appSettings['APPLICATIONINSIGHTS_CONNECTION_STRING'] = $functionState.ConnectionString
+                            @{ properties = $appSettings } | ConvertTo-Json -Depth 8
+                        }
+                        '/config/configreferences/appsettings' {
+                            if ($Arguments[$Arguments.IndexOf('--method') + 1] -ne 'get' -or
+                                $joined -match '/appsettings/list') {
+                                throw 'Key Vault reference status requires GET without /list.'
+                            }
+                            '{"properties":{"INVENTORY_CLIENT_SECRET":{"status":"Resolved"}}}'
+                        }
+                        '/host/default/properties/status' { '{"properties":{"state":"Running","version":"4.1040.0","errors":[]}}' }
+                        default { throw "Unexpected REST request: $joined" }
+                    }
+                    return @{ ExitCode = 0; Output = $output }
+                }
+                if ($Arguments[0..2] -join ' ' -eq 'functionapp function list') {
+                    $callLog.Add("azure:$joined")
+                    $functions = @(
+                        'AgentSyncTimer', 'AgentSyncOrchestrator', 'AgentSyncCreateActivity',
+                        'RpaSyncTimer', 'RpaSyncOrchestrator', 'RpaSyncActivity'
+                    ) | ForEach-Object {
+                        $disabledKey = "AzureWebJobs.$_.Disabled"
+                        $appSettings = $functionState.Parameters.parameters.applicationSettings.value
+                        @{
+                            name = "$($resourceNames.functionApp)/$_"
+                            isDisabled = $appSettings.Contains($disabledKey) -and $appSettings[$disabledKey] -eq 'true'
+                        }
+                    }
+                    return @{ ExitCode = 0; Output = (ConvertTo-Json -InputObject @($functions)) }
+                }
+                & $baseRunner $Command $Arguments $SensitiveArguments
+            }.GetNewClosure()
+        }
+
+        It 'publishes only after identity, credential, infrastructure, roles, and reference settings validate' {
+            $result = & $bootstrapPath -ConfigurationPath $configurationPath -Mode DeployFunctions `
+                -TenantId $tenantId -StatePath $statePath -CommandRunner $functionRunner -GraphRunner $graphRunner
+
+            $result.Status | Should -Be 'FunctionsValidated'
+            $result.Phases[4].Status | Should -Be 'Completed'
+            $result.Phases[5].Status | Should -Be 'Pending'
+            $result.UnresolvedValues | Should -HaveCount 0
+            $result.ApplicationSettings.INVENTORY_TENANT_ID | Should -Be $tenantId
+            $result.ApplicationSettings.INVENTORY_CLIENT_ID | Should -Be 'bbbbbbbb-bbbb-bbbb-bbbb-bbbbbbbbbbbb'
+            $result.FunctionValidation.HostState | Should -Be 'Running'
+            $result.FunctionValidation.Functions | Should -HaveCount 6
+            $functionCloud.Parameters.parameters.applicationSettings.value.'AzureWebJobs.AgentSyncTimer.Disabled' | Should -Be 'true'
+            $functionCloud.Parameters.parameters.applicationSettings.value.'AzureWebJobs.RpaSyncTimer.Disabled' | Should -Be 'true'
+            $publishIndex = $calls.FindIndex({ param($call) $call -like 'func:azure functionapp publish*' })
+            $roleIndex = $calls.FindLastIndex({ param($call) $call -like 'azure:role assignment list*' })
+            $referenceIndex = $calls.FindIndex({ param($call) $call -like '*config/configreferences/appsettings*' })
+            $credentialIndex = $calls.FindIndex({ param($call) $call -like 'azure:keyvault secret list-versions*' })
+            $publishIndex | Should -BeGreaterThan $roleIndex
+            $publishIndex | Should -BeGreaterThan $referenceIndex
+            $roleIndex | Should -BeGreaterThan $credentialIndex
+            ($calls -join "`n") | Should -Not -Match 'publish-local-settings|show-keys|AccountKey|secret show'
+            ($result | ConvertTo-Json -Depth 30) | Should -Not -Match $generatedSecret
+            $saved = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json -AsHashtable
+            $saved.phases[4].status | Should -Be 'Completed'
+        }
+
+        It 'enables timers only through a final incremental IaC update after publication and host validation' {
+            $configuration = Get-Content -LiteralPath $configurationPath -Raw | ConvertFrom-Json -AsHashtable
+            $configuration.agentTimerEnabled = $true
+            $configuration.rpaTimerEnabled = $true
+            $configuration.agentSchedule = '0 30 2 * * *'
+            $configuration.maxCreatesPerRun = 8
+            $configuration.rpaMaxParallelEnvironments = 3
+            $configuration.maximumInstanceCount = 25
+            $configuration | ConvertTo-Json | Set-Content -LiteralPath $configurationPath
+
+            $result = & $bootstrapPath -ConfigurationPath $configurationPath -Mode DeployFunctions `
+                -TenantId $tenantId -StatePath $statePath -CommandRunner $functionRunner -GraphRunner $graphRunner
+
+            $result.FunctionValidation.AgentTimerEnabled | Should -BeTrue
+            $result.FunctionValidation.RpaTimerEnabled | Should -BeTrue
+            $finalSettings = $functionCloud.Parameters.parameters.applicationSettings.value
+            $finalSettings.'AzureWebJobs.AgentSyncTimer.Disabled' | Should -Be 'false'
+            $finalSettings.'AzureWebJobs.RpaSyncTimer.Disabled' | Should -Be 'false'
+            $finalSettings.INVENTORY_AGENT_SCHEDULE | Should -Be '0 30 2 * * *'
+            $finalSettings.INVENTORY_MAX_CREATES_PER_RUN | Should -Be '8'
+            $finalSettings.INVENTORY_RPA_MAX_PARALLEL_ENVIRONMENTS | Should -Be '3'
+            $healthIndex = $calls.FindIndex({ param($call) $call -like '*host/default/properties/status*' })
+            $lastDeployment = $calls.FindLastIndex({ param($call) $call -like 'azure:deployment group create*functions.bicep*' })
+            $lastDeployment | Should -BeGreaterThan $healthIndex
+        }
+
+        It 'reports malformed Key Vault reference metadata as a resumable deployment failure without publishing' {
+            $normalRunner = $functionRunner
+            $malformedRunner = {
+                param($Command, $Arguments, $SensitiveArguments)
+                if (($Arguments -join ' ') -match '/config/configreferences/appsettings') {
+                    return @{ ExitCode = 0; Output = '{"properties":{}}' }
+                }
+                & $normalRunner $Command $Arguments $SensitiveArguments
+            }.GetNewClosure()
+
+            { & $bootstrapPath -ConfigurationPath $configurationPath -Mode DeployFunctions `
+                    -TenantId $tenantId -StatePath $statePath -CommandRunner $malformedRunner -GraphRunner $graphRunner } |
+                Should -Throw '*Function deployment*Key Vault reference*'
+
+            $functionCloud.Published | Should -BeFalse
+            $saved = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json -AsHashtable
+            $saved.phases[4].status | Should -Be 'Pending'
+        }
+
+        It 'rejects malformed <Stage> responses with deployment context and pending recovery state' -ForEach @(
+            @{ Stage = 'infrastructure'; Pattern = 'deployment group create.*functions.bicep'; Published = $false }
+            @{ Stage = 'roles'; Pattern = '^role assignment list'; Published = $false }
+            @{ Stage = 'settings'; Pattern = '/config/appsettings/list'; Published = $false }
+            @{ Stage = 'functions'; Pattern = '^functionapp function list'; Published = $true }
+            @{ Stage = 'host'; Pattern = '/host/default/properties/status'; Published = $true }
+        ) {
+            $normalRunner = $functionRunner
+            $responsePattern = $Pattern
+            $malformedRunner = {
+                param($Command, $Arguments, $SensitiveArguments)
+                if ($Command -eq 'az' -and ($Arguments -join ' ') -match $responsePattern) {
+                    return @{ ExitCode = 0; Output = '{}' }
+                }
+                & $normalRunner $Command $Arguments $SensitiveArguments
+            }.GetNewClosure()
+
+            { & $bootstrapPath -ConfigurationPath $configurationPath -Mode DeployFunctions `
+                    -TenantId $tenantId -StatePath $statePath -CommandRunner $malformedRunner -GraphRunner $graphRunner } |
+                Should -Throw '*Function deployment*'
+
+            $functionCloud.Published | Should -Be $Published
+            $saved = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json -AsHashtable
+            $saved.phases[4].status | Should -Be 'Pending'
+        }
+
+        It 'refuses completion when the host reports a timer enabled despite disabled app settings' {
+            $normalRunner = $functionRunner
+            $incorrectTimerRunner = {
+                param($Command, $Arguments, $SensitiveArguments)
+                $result = & $normalRunner $Command $Arguments $SensitiveArguments
+                if ($Arguments[0..2] -join ' ' -eq 'functionapp function list') {
+                    $functions = $result.Output | ConvertFrom-Json -AsHashtable
+                    ($functions | Where-Object name -like '*/AgentSyncTimer').isDisabled = $false
+                    $result.Output = ConvertTo-Json -InputObject @($functions)
+                }
+                $result
+            }.GetNewClosure()
+
+            { & $bootstrapPath -ConfigurationPath $configurationPath -Mode DeployFunctions `
+                    -TenantId $tenantId -StatePath $statePath -CommandRunner $incorrectTimerRunner -GraphRunner $graphRunner } |
+                Should -Throw '*Function deployment*timer*state*'
+
+            $saved = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json -AsHashtable
+            $saved.phases[4].status | Should -Be 'Pending'
+        }
+
+        It 'stops safely on <Stage> failure, suppresses sensitive output, and revalidates on resume' -ForEach @(
+            @{ Stage = 'infrastructure'; Pattern = 'deployment group create.*functions.bicep'; Response = $null; Published = $false }
+            @{ Stage = 'roles'; Pattern = '^role assignment list'; Response = '[]'; Published = $false }
+            @{ Stage = 'reference'; Pattern = '/config/configreferences/appsettings'; Response = '{"properties":{"INVENTORY_CLIENT_SECRET":{"status":"AccessToKeyVaultDenied"}}}'; Published = $false }
+            @{ Stage = 'publication'; Pattern = '^azure functionapp publish'; Response = $null; Published = $false }
+            @{ Stage = 'indexing'; Pattern = '^functionapp function list'; Response = '[]'; Published = $true }
+            @{ Stage = 'host'; Pattern = '/host/default/properties/status'; Response = '{"properties":{"state":"Error","version":"4.1040.0","errors":[]}}'; Published = $true }
+        ) {
+            $configuration = Get-Content -LiteralPath $configurationPath -Raw | ConvertFrom-Json -AsHashtable
+            $configuration.agentTimerEnabled = $true
+            $configuration | ConvertTo-Json | Set-Content -LiteralPath $configurationPath
+            $normalRunner = $functionRunner
+            $responsePattern = $Pattern
+            $failureResponse = $Response
+            $sensitiveValue = $generatedSecret
+            $failingRunner = {
+                param($Command, $Arguments, $SensitiveArguments)
+                if (($Arguments -join ' ') -match $responsePattern) {
+                    Write-Warning $sensitiveValue
+                    Write-Verbose $sensitiveValue -Verbose
+                    Write-Information $sensitiveValue -InformationAction Continue
+                    if ($null -eq $failureResponse) {
+                        return @{ ExitCode = 1; Output = "Failure: $sensitiveValue" }
+                    }
+                    return @{ ExitCode = 0; Output = $failureResponse }
+                }
+                & $normalRunner $Command $Arguments $SensitiveArguments
+            }.GetNewClosure()
+            $transcriptPath = Join-Path $TestDrive "function-$Stage-transcript.txt"
+            $observed = [System.Collections.Generic.List[object]]::new()
+            $caught = $null
+            Start-Transcript -LiteralPath $transcriptPath | Out-Null
+            try {
+                & $bootstrapPath -ConfigurationPath $configurationPath -Mode DeployFunctions `
+                    -TenantId $tenantId -StatePath $statePath -CommandRunner $failingRunner `
+                    -GraphRunner $graphRunner -Verbose *>&1 | ForEach-Object { $observed.Add($_) }
+            }
+            catch { $caught = $_ }
+            finally { Stop-Transcript | Out-Null }
+
+            $caught | Should -Not -BeNullOrEmpty
+            $caught.Exception.Message | Should -Match 'Function deployment'
+            $caught.Exception.Message | Should -Not -Match $generatedSecret
+            ($observed | Out-String) | Should -Not -Match $generatedSecret
+            Get-Content -LiteralPath $transcriptPath -Raw | Should -Not -Match $generatedSecret
+            ($Error | ForEach-Object { $_.Exception.ToString() } | Out-String) | Should -Not -Match $generatedSecret
+            $functionCloud.Published | Should -Be $Published
+            $functionCloud.Parameters.parameters.applicationSettings.value.'AzureWebJobs.AgentSyncTimer.Disabled' | Should -Be 'true'
+            $savedContent = Get-Content -LiteralPath $statePath -Raw
+            $savedContent | Should -Not -Match $generatedSecret
+            ($savedContent | ConvertFrom-Json -AsHashtable).phases[4].status | Should -Be 'Pending'
+            $calls.Clear()
+            $graphRequests.Clear()
+
+            $resumed = & $bootstrapPath -ConfigurationPath $configurationPath -Mode DeployFunctions `
+                -TenantId $tenantId -StatePath $statePath -CommandRunner $functionRunner -GraphRunner $graphRunner
+
+            $resumed.Status | Should -Be 'FunctionsValidated'
+            $resumed.FunctionValidation.AgentTimerEnabled | Should -BeTrue
+            @($calls | Where-Object { $_ -like 'azure:role assignment list*' }) | Should -HaveCount 4
+            @($graphRequests | Where-Object Operation -in @(
+                'CreateApplication', 'CreateServicePrincipal', 'AssignGlobalReader', 'CreatePassword'
+            )) | Should -HaveCount 0
         }
     }
 

@@ -37,7 +37,7 @@ Describe 'Offline inventory deployment contract' {
 
         $plan.Status | Should -Be 'PlanValidated'
         $plan.CloudChangesMade | Should -BeFalse
-        $plan.Compilation | Should -HaveCount 3
+        $plan.Compilation | Should -HaveCount 4
         $plan.Configuration.location | Should -Be 'northeurope'
         $plan.Configuration.instanceMemoryMB | Should -Be 2048
         $plan.Configuration.maximumInstanceCount | Should -Be 20
@@ -64,7 +64,7 @@ Describe 'Offline inventory deployment contract' {
             'function-deployment', 'logging-solution', 'readiness-validation'
         )
         @($plan.Phases | Where-Object Status -ne 'Pending') | Should -HaveCount 0
-        $calls | Should -HaveCount 5
+        $calls | Should -HaveCount 6
         $plan | ConvertTo-Json -Depth 20 | Should -Not -Match 'UseDevelopmentStorage|AccountKey='
     }
 

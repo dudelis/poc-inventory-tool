@@ -10,12 +10,14 @@ For a new installation, use the [portable deployment package](../deploy/README.m
 to plan and provision the dedicated Azure foundation, then establish the runtime
 identity and Key Vault credential with `DeployIdentity`. The package documents its
 interactive Graph permissions, required operator vault role, and resumable credential
-recovery. Function deployment and Power Platform setup still require the manual steps here. Use the
+recovery. `DeployFunctions` also deploys/publishes the Flex workload, assigns managed
+identity storage/vault roles, and validates host health with timers disabled by
+default. Power Platform setup still requires the manual steps here. Use the
 bootstrap's reported resource names, not the existing manual installation's names.
 
 Both timers start singleton Durable orchestrations. They use one Entra service principal
-for Azure Resource Graph and Dataverse, and the Function App's managed identity only to
-resolve the service-principal secret from Key Vault.
+for Azure Resource Graph and Dataverse. The Function App's managed identity resolves
+the service-principal secret from Key Vault and accesses host/Durable/deployment storage.
 
 ## 1. Prerequisites
 
@@ -109,15 +111,21 @@ Dataverse logging fails and the failure is written to Application Insights.
 
 ## 3. Configure the Function App
 
-Add these values under **Function App > Settings > Environment variables > App
-settings**. Examples are illustrative.
+For portable installations, edit deployment inputs and rerun `DeployFunctions` as
+described in the [deployment guide](../deploy/README.md); do not edit IaC-managed
+settings in the portal. For an existing manually managed installation, the following
+values are under **Function App > Settings > Environment variables > App settings**.
+Examples and historical local defaults below are illustrative.
 
 | Setting | Required | Purpose and implemented behavior | Example |
 |---|---|---|---|
-| `AzureWebJobsStorage` | Yes | Host storage used by Azure Functions and Durable Functions. Use the storage connection configured for the Function App; `UseDevelopmentStorage=true` is local-only. | Azure-managed storage connection value |
-| `FUNCTIONS_EXTENSION_VERSION` | Yes | Selects Functions runtime v4. | `~4` |
-| `FUNCTIONS_WORKER_RUNTIME` | Yes | Selects the PowerShell worker. | `powershell` |
-| `FUNCTIONS_WORKER_RUNTIME_VERSION` | Yes | Pins the worker to the implemented and supported runtime. | `7.6` |
+| `AzureWebJobsStorage__accountName` | Azure | Identity-based host and Durable storage account. Do not also set a storage connection string. | Dedicated storage account name |
+| `AzureWebJobsStorage__credential` | Azure | Uses the app's system-assigned managed identity with blob/queue/table data roles. | `managedidentity` |
+| `AzureWebJobsStorage` | Local only | Azurite host/Durable connection; not deployed by the portable package. | `UseDevelopmentStorage=true` |
+| `FUNCTIONS_EXTENSION_VERSION` | Non-Flex/local | Flex manages the v4 host; do not set this on Flex. | `~4` |
+| `FUNCTIONS_WORKER_RUNTIME` | Non-Flex/local | Flex uses `functionAppConfig.runtime.name` instead. | `powershell` |
+| `FUNCTIONS_WORKER_RUNTIME_VERSION` | Non-Flex/local | Flex uses `functionAppConfig.runtime.version` instead. | `7.6` |
+| `AzureWebJobs.AgentSyncTimer.Disabled`, `AzureWebJobs.RpaSyncTimer.Disabled` | Portable Azure | Both default to disabled. Change the deployment timer flags only after readiness/smoke checks. | `true` |
 | `ExternalDurablePowerShellSDK` | Yes | Makes the worker use the standalone Durable SDK bundled in `src/Modules` instead of the built-in one. Without it, the orchestrations do not run. | `true` |
 | `APPLICATIONINSIGHTS_CONNECTION_STRING` | Yes | Sends host telemetry and the structured records emitted by the sync to Application Insights. The configuration loader also requires a nonblank value. Instrumentation-key-only settings are not used. | `InstrumentationKey=00000000-0000-0000-0000-000000000000;IngestionEndpoint=https://westeurope-5.in.applicationinsights.azure.com/` |
 | `INVENTORY_TENANT_ID` | Yes | Entra tenant used for all client-credential token requests. | `11111111-1111-1111-1111-111111111111` |
@@ -133,6 +141,11 @@ settings**. Examples are illustrative.
 | `INVENTORY_SYNC_RUN_TABLE` | No | Sync Run Dataverse entity-set name. Blank or absent uses the shipped solution name. | `invs_syncruns` (default) |
 | `INVENTORY_SYNC_LOG_TABLE` | No | Sync Log Dataverse entity-set name. Blank or absent uses the shipped solution name. | `invs_synclogs` (default) |
 | `INVENTORY_MAX_CREATES_PER_RUN` | No | Shared per-run creation cap for either sync. Excess new components are skipped and logged and can make the run `Partial`; the cap does not limit update or restore operations. Resulting skips can prevent a deletion check where the sync's completeness guard applies. Must be a non-negative integer; `0` disables creates. | `1000` (default) |
+
+Portable deployments store Agent/RPA schedules at 00:00/01:00 UTC and set both
+creation cap and RPA parallelism to 5. They enforce UTC on Flex; local historical
+defaults in the table are unchanged. Timer state, schedules, and limits must be
+changed through deployment inputs and incremental IaC, not portal drift.
 
 The Key Vault reference must resolve successfully in the app-setting UI. A versionless
 URI follows the latest secret version; use
@@ -162,7 +175,13 @@ Activity, a propagated ID is retained; only a direct call with neither uses a ne
 
 ## 4. Deploy the code
 
-Install Azure Functions Core Tools v4, Azure CLI, PowerShell, and Power Platform CLI
+For a portable installation, use `DeployFunctions` from the
+[deployment guide](../deploy/README.md) instead of publishing/configuring manually.
+It deploys disabled timers, validates infrastructure/RBAC/reference settings,
+publishes from `src`, and checks functions, timer states, and host health. Keep
+timers disabled until the remaining Power Platform setup and smoke runs are complete.
+
+For an existing manually managed installation, install Azure Functions Core Tools v4, Azure CLI, PowerShell, and Power Platform CLI
 (`pac`) on the deployment workstation. Authenticate to the subscription containing the
 Function App, then publish the contents of `src`:
 

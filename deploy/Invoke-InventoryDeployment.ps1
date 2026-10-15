@@ -4,7 +4,7 @@ param(
     [Parameter(Mandatory)]
     [string] $ConfigurationPath,
 
-    [ValidateSet('Plan', 'DeployFoundation', 'DeployIdentity')]
+    [ValidateSet('Plan', 'DeployFoundation', 'DeployIdentity', 'DeployFunctions')]
     [string] $Mode = 'Plan',
 
     [string] $TenantId,
@@ -135,7 +135,7 @@ function Invoke-SensitiveAdapter {
         }
     }
     if (-not $succeeded) { throw $FailureMessage }
-    return $value
+    return ,$value
 }
 
 function Invoke-ValidationCommand {
@@ -143,15 +143,18 @@ function Invoke-ValidationCommand {
         [string[]] $Arguments,
         [string] $Remediation,
         [string] $Phase = 'Preflight',
-        [System.Collections.IDictionary] $SensitiveArguments
+        [System.Collections.IDictionary] $SensitiveArguments,
+        [ValidateSet('az', 'func')]
+        [string] $Command = 'az',
+        [switch] $SanitizeOutput
     )
-    if ($SensitiveArguments) {
+    if ($SensitiveArguments -or $SanitizeOutput) {
         $result = Invoke-SensitiveAdapter -Adapter $CommandRunner `
-            -AdapterArguments @('az', $Arguments, $SensitiveArguments) `
+            -AdapterArguments @($Command, $Arguments, $SensitiveArguments) `
             -FailureMessage "${Phase}: sensitive command failed. $Remediation"
     }
     else {
-        $result = & $CommandRunner 'az' $Arguments
+        $result = & $CommandRunner $Command $Arguments
     }
     if ($null -eq $result -or -not $result.Contains('ExitCode') -or -not $result.Contains('Output')) {
         throw "${Phase}: command runner must return ExitCode and Output."
@@ -165,7 +168,10 @@ function Invoke-ValidationCommand {
         }
     }
     if ($result.ExitCode -ne 0) {
-        throw "${Phase}: az $($Arguments -join ' ') failed. $Remediation`n$safeOutput"
+        if ($SanitizeOutput) {
+            throw "${Phase}: $Command command failed; output suppressed because it may contain credentials. $Remediation"
+        }
+        throw "${Phase}: $Command $($Arguments -join ' ') failed. $Remediation`n$safeOutput"
     }
     return $safeOutput
 }
@@ -175,10 +181,17 @@ function Invoke-AzureJson {
         [string[]] $Arguments,
         [string] $Phase,
         [string] $Remediation,
-        [System.Collections.IDictionary] $SensitiveArguments
+        [System.Collections.IDictionary] $SensitiveArguments,
+        [switch] $SanitizeOutput
     )
     $output = Invoke-ValidationCommand -Arguments $Arguments -Phase $Phase -Remediation $Remediation `
-        -SensitiveArguments $SensitiveArguments
+        -SensitiveArguments $SensitiveArguments -SanitizeOutput:$SanitizeOutput
+    if ($SanitizeOutput) {
+        return Invoke-SensitiveAdapter -Adapter {
+            param($Json)
+            ConvertFrom-Json -InputObject $Json -AsHashtable -NoEnumerate -ErrorAction Stop
+        } -AdapterArguments @($output) -FailureMessage "${Phase}: invalid JSON response; output suppressed. $Remediation"
+    }
     try {
         return ConvertFrom-Json -InputObject $output -AsHashtable -NoEnumerate
     }
@@ -188,17 +201,21 @@ function Invoke-AzureJson {
 }
 
 function Assert-FoundationProperties {
-    param([System.Collections.IDictionary] $Resource, [System.Collections.IDictionary] $Expected)
+    param(
+        [System.Collections.IDictionary] $Resource,
+        [System.Collections.IDictionary] $Expected,
+        [string] $Phase = 'Azure foundation'
+    )
     foreach ($path in $Expected.Keys) {
         $actual = $Resource
         foreach ($segment in $path -split '\.') {
             if ($actual -isnot [System.Collections.IDictionary] -or -not $actual.Contains($segment)) {
-                throw "Azure foundation: resource validation failed for '$path'. Inspect the resource and the deployment before retrying."
+                throw "${Phase}: resource validation failed for '$path'. Inspect the resource and the deployment before retrying."
             }
             $actual = $actual[$segment]
         }
         if ($actual -ne $Expected[$path]) {
-            throw "Azure foundation: incompatible resource '$($Resource.name)': '$path' differs from the deployment contract. Resolve the conflict before retrying."
+            throw "${Phase}: incompatible resource: '$path' differs from the deployment contract. Resolve the conflict before retrying."
         }
     }
 }
@@ -489,7 +506,7 @@ $names = [ordered] @{
     deploymentContainer = 'inventory-sync-deploy'
 }
 $azureContext = $null
-if ($Mode -in @('DeployFoundation', 'DeployIdentity')) {
+if ($Mode -in @('DeployFoundation', 'DeployIdentity', 'DeployFunctions')) {
     if ($TenantId -notmatch '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$' -or
         [guid] $TenantId -eq [guid]::Empty -or [guid] $configuration.subscriptionId -eq [guid]::Empty) {
         throw 'Preflight: DeployFoundation requires a non-zero -TenantId GUID and subscriptionId.'
@@ -513,7 +530,21 @@ if ($Mode -in @('DeployFoundation', 'DeployIdentity')) {
         throw 'Preflight: an enabled subscription and an interactively authenticated user are required. Run az login --tenant <tenant-id>.'
     }
     Write-Information "Azure context: tenant $($azureContext.tenantId), subscription $($azureContext.id), operator $($azureContext.user.name)." -InformationAction Continue
-    if ($Mode -eq 'DeployIdentity') {
+    if ($Mode -eq 'DeployFunctions') {
+        if (-not $prerequisites[1].Available) {
+            throw "Function deployment: Functions Core Tools v4 is missing. $($prerequisites[1].Guidance)"
+        }
+        $coreToolsVersion = Invoke-ValidationCommand -Command func -Arguments @('--version') `
+            -Phase 'Function deployment' -SanitizeOutput `
+            -Remediation 'Install Functions Core Tools v4 explicitly before retrying DeployFunctions.'
+        if ($coreToolsVersion.Trim() -notmatch '^4\.\d+\.\d+(?:[-+][^\s]+)?$') {
+            throw 'Function deployment: Functions Core Tools v4 is required. Upgrade the installed tool explicitly before retrying.'
+        }
+        if ($configuration.agentCreatedIn -match '[<>]') {
+            throw 'Function deployment: replace the agentCreatedIn placeholder with the tenant authoring-tool value before deploying.'
+        }
+    }
+    if ($Mode -in @('DeployIdentity', 'DeployFunctions')) {
         if (-not $StatePath) {
             throw 'Runtime identity: DeployIdentity requires -StatePath so non-secret recovery metadata can be retained.'
         }
@@ -542,9 +573,6 @@ if ($Mode -in @('DeployFoundation', 'DeployIdentity')) {
     }
 }
 $settings = [ordered] @{
-    FUNCTIONS_EXTENSION_VERSION = '~4'
-    FUNCTIONS_WORKER_RUNTIME = 'powershell'
-    FUNCTIONS_WORKER_RUNTIME_VERSION = '7.6'
     ExternalDurablePowerShellSDK = 'true'
     AzureWebJobsStorage__accountName = $names.storage
     AzureWebJobsStorage__credential = 'managedidentity'
@@ -677,7 +705,7 @@ for ($index = 0; $index -lt $phases.Count; $index++) {
 }
 
 $cloudChangesMade = $false
-if ($Mode -in @('DeployFoundation', 'DeployIdentity')) {
+if ($Mode -in @('DeployFoundation', 'DeployIdentity', 'DeployFunctions')) {
     $remediation = 'Inspect Azure Policy, resource providers, quota, deployment errors, and operator permissions. Fix the reported cause and rerun DeployFoundation; later phases have not run.'
     $scope = @('--subscription', $configuration.subscriptionId, '--output', 'json')
     $groupExists = Invoke-AzureJson -Arguments (@('group', 'exists', '--name', $names.resourceGroup) + $scope) `
@@ -835,7 +863,14 @@ if ($Mode -in @('DeployFoundation', 'DeployIdentity')) {
             'tags.inventory-sync-installation' = $suffix; 'tags.inventory-sync-workload' = $stem
             'properties.provisioningState' = 'Succeeded'
         }
-        foreach ($key in $definition.Properties.Keys) { $expected[$key] = $definition.Properties[$key] }
+        $vaultOmitsOpenNetworkAcls = $definition.Type -eq 'Microsoft.KeyVault/vaults' -and
+            $resource.properties -is [System.Collections.IDictionary] -and
+            -not $resource.properties.Contains('networkAcls')
+        foreach ($key in $definition.Properties.Keys) {
+            # Key Vault omits networkAcls when public access is enabled with the default Allow policy.
+            if ($vaultOmitsOpenNetworkAcls -and $key -eq 'properties.networkAcls.defaultAction') { continue }
+            $expected[$key] = $definition.Properties[$key]
+        }
         Assert-FoundationProperties -Resource $resource -Expected $expected
     }
     for ($index = 0; $index -lt 2; $index++) {
@@ -856,7 +891,7 @@ if ($Mode -in @('DeployFoundation', 'DeployIdentity')) {
 }
 
 $runtimeIdentity = $null
-if ($Mode -eq 'DeployIdentity') {
+if ($Mode -in @('DeployIdentity', 'DeployFunctions')) {
     $identityRemediation = 'Verify Microsoft Graph permissions, directory-role privileges, and tenant context, then rerun DeployIdentity.'
     $ownershipTag = "InventorySyncInstallation:$suffix"
     $applicationCandidates = @(& $GraphRunner 'FindApplications' @{
@@ -1198,12 +1233,264 @@ if ($Mode -eq 'DeployIdentity') {
     $settings.INVENTORY_CLIENT_ID = $application.AppId
 }
 
+$functionValidation = $null
+if ($Mode -eq 'DeployFunctions') {
+    $phase = 'Function deployment'
+    $functionRemediation = 'Inspect the managed Function deployment, Microsoft.Web registration, Flex region/runtime availability, and Azure RBAC permissions. Correct the cause and rerun DeployFunctions with the same state; do not enable timers in the portal.'
+    $resourceRoot = "/subscriptions/$($configuration.subscriptionId)/resourceGroups/$($names.resourceGroup)/providers"
+    $appId = "$resourceRoot/Microsoft.Web/sites/$($names.functionApp)"
+    $planId = "$resourceRoot/Microsoft.Web/serverfarms/$($names.hostingPlan)"
+    $storageId = "$resourceRoot/Microsoft.Storage/storageAccounts/$($names.storage)"
+    $vaultId = "$resourceRoot/Microsoft.KeyVault/vaults/$($names.keyVault)"
+    $runtimeNames = @{
+        'Microsoft.Web/sites' = $names.functionApp
+        'Microsoft.Web/serverfarms' = $names.hostingPlan
+    }
+    foreach ($existingResource in $existingResources) {
+        if ($existingResource.type -notin $runtimeNames.Keys -and
+            $existingResource.name -notin $runtimeNames.Values) { continue }
+        if (-not $runtimeNames.Contains($existingResource.type) -or
+            $existingResource.name -ne $runtimeNames[$existingResource.type]) {
+            throw "Function deployment: ambiguous resource name or type in the dedicated group. $functionRemediation"
+        }
+        $expected = @{
+            id = "$resourceRoot/$($existingResource.type)/$($existingResource.name)"
+            location = $configuration.location
+            'tags.inventory-sync-installation' = $suffix
+            'tags.inventory-sync-workload' = $stem
+        }
+        Assert-FoundationProperties -Resource $existingResource -Expected $expected -Phase $phase
+        $details = Invoke-AzureJson -Arguments (@('resource', 'show', '--ids', $expected.id) + $scope) `
+            -Phase $phase -Remediation $functionRemediation -SanitizeOutput
+        $compatible = if ($existingResource.type -eq 'Microsoft.Web/sites') {
+            @{ kind = 'functionapp,linux'; 'properties.serverFarmId' = $planId }
+        }
+        else { @{ 'sku.name' = 'FC1'; 'properties.reserved' = $true } }
+        Assert-FoundationProperties -Resource $details -Expected $compatible -Phase $phase
+    }
+
+    $state.phases[4].status = 'Pending'
+    Save-DeploymentState -State $state -Path $resolvedStatePath
+    # Publish and verify with timers disabled before applying an explicit IaC opt-in.
+    $activationPasses = @($false)
+    if ($configuration.agentTimerEnabled -or $configuration.rpaTimerEnabled) { $activationPasses += $true }
+    foreach ($activateTimers in $activationPasses) {
+        $parameterFile = Join-Path ([IO.Path]::GetTempPath()) "inventory-functions-$([guid]::NewGuid()).json"
+        try {
+            $runtimeSettings = [ordered] @{}
+            foreach ($key in $settings.Keys) {
+                if ($key -ne 'APPLICATIONINSIGHTS_CONNECTION_STRING') { $runtimeSettings[$key] = $settings[$key] }
+            }
+            if (-not $activateTimers) {
+                $runtimeSettings['AzureWebJobs.AgentSyncTimer.Disabled'] = 'true'
+                $runtimeSettings['AzureWebJobs.RpaSyncTimer.Disabled'] = 'true'
+            }
+            $functionParameters = @{
+                storageName = $names.storage; keyVaultName = $names.keyVault
+                applicationInsightsName = $names.applicationInsights
+                hostingPlanName = $names.hostingPlan; functionAppName = $names.functionApp
+                deploymentContainerName = $names.deploymentContainer
+                location = $configuration.location; installationId = $suffix; workloadName = $stem
+                applicationSettings = $runtimeSettings
+                instanceMemoryMB = $configuration.instanceMemoryMB
+                maximumInstanceCount = $configuration.maximumInstanceCount
+            }
+            $armParameters = @{}
+            foreach ($key in $functionParameters.Keys) {
+                $armParameters[$key] = @{ value = $functionParameters[$key] }
+            }
+            @{ parameters = $armParameters } | ConvertTo-Json -Depth 8 |
+                Set-Content -LiteralPath $parameterFile -Encoding utf8
+            $deploymentArguments = @(
+                '--resource-group', $names.resourceGroup, '--name', "inventory-functions-$suffix",
+                '--template-file', (Join-Path $PSScriptRoot 'functions.bicep'),
+                '--mode', 'Incremental', '--parameters', "@$parameterFile"
+            ) + $scope
+            Invoke-AzureJson -Arguments (@('deployment', 'group', 'validate') + $deploymentArguments) `
+                -Phase $phase -Remediation $functionRemediation -SanitizeOutput | Out-Null
+            $deployment = Invoke-AzureJson -Arguments (@('deployment', 'group', 'create') + $deploymentArguments) `
+                -Phase $phase -Remediation $functionRemediation -SanitizeOutput
+            $cloudChangesMade = $true
+            if ($deployment -isnot [System.Collections.IDictionary] -or -not $deployment.Contains('properties') -or
+                $deployment.properties -isnot [System.Collections.IDictionary] -or
+                -not $deployment.properties.Contains('provisioningState') -or
+                $deployment.properties.provisioningState -ne 'Succeeded') {
+                throw "Function deployment: infrastructure did not reach Succeeded. $functionRemediation"
+            }
+        }
+        finally {
+            if (Test-Path -LiteralPath $parameterFile) { Remove-Item -LiteralPath $parameterFile }
+        }
+        foreach ($id in @($planId, $appId)) {
+            $resource = Invoke-AzureJson -Arguments (@('resource', 'show', '--ids', $id) + $scope) `
+                -Phase $phase -Remediation $functionRemediation -SanitizeOutput
+            $expected = @{
+                id = $id; location = $configuration.location
+                'tags.inventory-sync-installation' = $suffix; 'tags.inventory-sync-workload' = $stem
+            }
+            $properties = if ($id -eq $planId) {
+                @{ 'sku.name' = 'FC1'; 'sku.tier' = 'FlexConsumption'; 'properties.reserved' = $true }
+            }
+            else {
+                @{
+                    kind = 'functionapp,linux'; 'identity.type' = 'SystemAssigned'
+                    'properties.state' = 'Running'; 'properties.serverFarmId' = $planId
+                    'properties.httpsOnly' = $true; 'properties.siteConfig.minTlsVersion' = '1.2'
+                    'properties.functionAppConfig.runtime.name' = 'powershell'
+                    'properties.functionAppConfig.runtime.version' = '7.6'
+                    'properties.functionAppConfig.scaleAndConcurrency.instanceMemoryMB' = $configuration.instanceMemoryMB
+                    'properties.functionAppConfig.scaleAndConcurrency.maximumInstanceCount' = $configuration.maximumInstanceCount
+                    'properties.functionAppConfig.deployment.storage.type' = 'blobContainer'
+                    'properties.functionAppConfig.deployment.storage.value' = "https://$($names.storage).blob.core.windows.net/$($names.deploymentContainer)"
+                    'properties.functionAppConfig.deployment.storage.authentication.type' = 'SystemAssignedIdentity'
+                }
+            }
+            foreach ($key in $properties.Keys) { $expected[$key] = $properties[$key] }
+            Assert-FoundationProperties -Resource $resource -Expected $expected -Phase $phase
+            if ($id -eq $appId) { $functionApp = $resource }
+        }
+        $principalId = if ($functionApp.identity.Contains('principalId')) { $functionApp.identity.principalId } else { $null }
+        if ($principalId -notmatch '^[0-9a-fA-F]{8}(-[0-9a-fA-F]{4}){3}-[0-9a-fA-F]{12}$' -or
+            [guid] $principalId -eq [guid]::Empty) {
+            throw "Function deployment: the system-assigned principal is unavailable. $functionRemediation"
+        }
+        $roleScopes = @(
+            @{ Id = $storageId; Roles = @(
+                'b7e6dc6d-f1e8-4753-8033-0f276bb0955b',
+                '974c5e8b-45b9-4653-ba55-5f855dd0fb88',
+                '0a9a7e1f-b9d0-4cc4-a60d-0319b160aaa3'
+            ) }
+            @{ Id = $vaultId; Roles = @('4633458b-17de-408a-b874-0445c86b69e6') }
+        )
+        foreach ($roleScope in $roleScopes) {
+            $assignments = Invoke-AzureJson -Arguments (@(
+                'role', 'assignment', 'list', '--scope', $roleScope.Id, '--all'
+            ) + $scope) -Phase $phase -Remediation $functionRemediation -SanitizeOutput
+            if ($assignments -isnot [array] -or @($assignments | Where-Object {
+                $_ -isnot [System.Collections.IDictionary] -or -not $_.Contains('principalId') -or
+                -not $_.Contains('scope') -or -not $_.Contains('roleDefinitionId')
+            }).Count -gt 0) {
+                throw "Function deployment: invalid role assignment metadata. $functionRemediation"
+            }
+            foreach ($roleId in $roleScope.Roles) {
+                $matches = @($assignments | Where-Object {
+                    $_.principalId -eq $principalId -and $_.scope -eq $roleScope.Id -and
+                    $_.roleDefinitionId -eq "/subscriptions/$($configuration.subscriptionId)/providers/Microsoft.Authorization/roleDefinitions/$roleId"
+                })
+                if ($matches.Count -ne 1) {
+                    throw "Function deployment: managed identity role $roleId is missing or ambiguous. Wait for RBAC propagation and rerun DeployFunctions; no code was published."
+                }
+            }
+        }
+        $settingsDocument = Invoke-AzureJson -Arguments (@(
+            'rest', '--method', 'post', '--url', "https://management.azure.com$appId/config/appsettings/list?api-version=2024-04-01"
+        ) + $scope) -Phase $phase -Remediation $functionRemediation -SanitizeOutput
+        if ($settingsDocument -isnot [System.Collections.IDictionary] -or -not $settingsDocument.Contains('properties')) {
+            throw "Function deployment: app settings response is invalid; values suppressed. $functionRemediation"
+        }
+        $actualSettings = $settingsDocument.properties
+        if ($actualSettings -isnot [System.Collections.IDictionary]) {
+            throw "Function deployment: app settings response is invalid. $functionRemediation"
+        }
+        foreach ($key in $runtimeSettings.Keys) {
+            if (-not $actualSettings.Contains($key) -or $actualSettings[$key] -cne $runtimeSettings[$key]) {
+                throw "Function deployment: app setting '$key' differs from the IaC contract; values suppressed. $functionRemediation"
+            }
+        }
+        foreach ($key in @('AzureWebJobsStorage', 'WEBSITE_CONTENTAZUREFILECONNECTIONSTRING', 'WEBSITE_RUN_FROM_PACKAGE',
+            'AzureWebJobsStorage__clientId', 'AzureWebJobsStorage__managedIdentityResourceId',
+            'AzureWebJobsStorage__blobServiceUri', 'AzureWebJobsStorage__queueServiceUri', 'AzureWebJobsStorage__tableServiceUri')) {
+            if ($actualSettings.Contains($key)) {
+                throw "Function deployment: conflicting storage or package setting '$key' exists; values suppressed. Reconcile settings through IaC before retrying."
+            }
+        }
+        if (-not $actualSettings.Contains('APPLICATIONINSIGHTS_CONNECTION_STRING') -or
+            $actualSettings.APPLICATIONINSIGHTS_CONNECTION_STRING -notmatch '^InstrumentationKey=[0-9a-fA-F-]{36};') {
+            throw "Function deployment: telemetry connection string is missing or invalid; value suppressed. $functionRemediation"
+        }
+        $settings.APPLICATIONINSIGHTS_CONNECTION_STRING = $actualSettings.APPLICATIONINSIGHTS_CONNECTION_STRING
+        $actualSettings = $null
+        $settingsDocument = $null
+        $references = Invoke-AzureJson -Arguments (@(
+            'rest', '--method', 'get', '--url', "https://management.azure.com$appId/config/configreferences/appsettings?api-version=2024-04-01"
+        ) + $scope) -Phase $phase -Remediation $functionRemediation -SanitizeOutput
+        if ($references -isnot [System.Collections.IDictionary] -or -not $references.Contains('properties') -or
+            $references.properties -isnot [System.Collections.IDictionary] -or
+            -not $references.properties.Contains('INVENTORY_CLIENT_SECRET') -or
+            $references.properties.INVENTORY_CLIENT_SECRET -isnot [System.Collections.IDictionary] -or
+            -not $references.properties.INVENTORY_CLIENT_SECRET.Contains('status') -or
+            $references.properties.INVENTORY_CLIENT_SECRET.status -ne 'Resolved') {
+            throw 'Function deployment: Key Vault reference is not Resolved. Wait for RBAC propagation, verify vault access and the active secret, then rerun DeployFunctions; no code was published.'
+        }
+
+        if (-not $activateTimers) {
+            Push-Location (Join-Path $PSScriptRoot '..\src')
+            try {
+                Invoke-ValidationCommand -Command func -Arguments @(
+                    'azure', 'functionapp', 'publish', $names.functionApp,
+                    '--subscription', $configuration.subscriptionId
+                ) -Phase $phase -Remediation 'Publication failed. Keep timers disabled, inspect Core Tools and OneDeploy diagnostics without sharing credentials, and rerun DeployFunctions; earlier phases will be revalidated.' `
+                    -SanitizeOutput | Out-Null
+            }
+            finally { Pop-Location }
+        }
+        $publishedFunctions = Invoke-AzureJson -Arguments (@(
+            'functionapp', 'function', 'list', '--resource-group', $names.resourceGroup, '--name', $names.functionApp
+        ) + $scope) -Phase $phase -Remediation $functionRemediation -SanitizeOutput
+        if ($publishedFunctions -isnot [array] -or @($publishedFunctions | Where-Object {
+            $_ -isnot [System.Collections.IDictionary] -or -not $_.Contains('name') -or $_.name -isnot [string]
+        }).Count -gt 0) {
+            throw "Function deployment: invalid published function metadata. $functionRemediation"
+        }
+        $expectedFunctions = @(Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot '..\src') -Directory |
+            Where-Object { Test-Path -LiteralPath (Join-Path $_.FullName 'function.json') } |
+            ForEach-Object Name | Sort-Object)
+        $functionNames = @($publishedFunctions | ForEach-Object { ($_.name -split '/')[-1] } | Sort-Object)
+        if (($functionNames -join ',') -cne ($expectedFunctions -join ',')) {
+            throw 'Function deployment: published functions do not match the repository. Inspect publication and host indexing diagnostics, then rerun DeployFunctions.'
+        }
+        foreach ($timerName in @('AgentSyncTimer', 'RpaSyncTimer')) {
+            $timer = @($publishedFunctions | Where-Object { ($_.name -split '/')[-1] -ceq $timerName })[0]
+            $expectedDisabled = $runtimeSettings["AzureWebJobs.$timerName.Disabled"] -eq 'true'
+            if (-not $timer.Contains('isDisabled') -or $timer.isDisabled -isnot [bool] -or
+                $timer.isDisabled -ne $expectedDisabled) {
+                throw 'Function deployment: published timer state differs from IaC. Wait for host indexing/restart and rerun DeployFunctions; do not change timer state in the portal.'
+            }
+        }
+        $hostStatus = Invoke-AzureJson -Arguments (@(
+            'rest', '--method', 'get', '--url', "https://management.azure.com$appId/host/default/properties/status?api-version=2024-04-01"
+        ) + $scope) -Phase $phase `
+            -Remediation 'Host health check failed. Wait for startup/RBAC propagation, inspect Application Insights and host diagnostics, and rerun DeployFunctions; timers must remain disabled until readiness is confirmed.' `
+            -SanitizeOutput
+        if ($hostStatus -isnot [System.Collections.IDictionary] -or -not $hostStatus.Contains('properties') -or
+            $hostStatus.properties -isnot [System.Collections.IDictionary] -or
+            -not $hostStatus.properties.Contains('state') -or -not $hostStatus.properties.Contains('version') -or
+            $hostStatus.properties.state -ne 'Running' -or $hostStatus.properties.version -notmatch '^4\.' -or
+            ($hostStatus.properties.Contains('errors') -and @($hostStatus.properties.errors).Count -gt 0)) {
+            throw 'Function deployment: host is not healthy on Functions v4. Inspect host diagnostics and rerun DeployFunctions; do not enable timers.'
+        }
+    }
+    $phases[4].Status = 'Completed'
+    $phases[4].NeedsRevalidation = $false
+    $state.phases[4].status = 'Completed'
+    Save-DeploymentState -State $state -Path $resolvedStatePath
+    $functionValidation = [pscustomobject] @{
+        PrincipalId = $principalId
+        KeyVaultReferenceStatus = 'Resolved'
+        HostState = 'Running'
+        Functions = $functionNames
+        AgentTimerEnabled = $configuration.agentTimerEnabled
+        RpaTimerEnabled = $configuration.rpaTimerEnabled
+    }
+}
+
 [pscustomobject] @{
     SchemaVersion = 1
     Mode = $Mode
     Status = $(switch ($Mode) {
         'DeployFoundation' { 'FoundationValidated' }
         'DeployIdentity' { 'IdentityValidated' }
+        'DeployFunctions' { 'FunctionsValidated' }
         default { 'PlanValidated' }
     })
     CloudChangesMade = $cloudChangesMade
@@ -1211,6 +1498,8 @@ if ($Mode -eq 'DeployIdentity') {
     FoundationDeploymentImplemented = $true
     AzureContext = $azureContext
     Identity = $runtimeIdentity
+    FunctionDeploymentImplemented = $true
+    FunctionValidation = $functionValidation
     DeploymentMode = 'Incremental'
     Configuration = $configuration
     ResourceNames = $names
@@ -1227,17 +1516,21 @@ if ($Mode -eq 'DeployIdentity') {
         hostingPlan = @{ name = $names.hostingPlan; sku = 'FC1'; tier = 'FlexConsumption' }
         functionApp = @{
             name = $names.functionApp; runtime = 'powershell'; runtimeVersion = '7.6'
+            functionsRuntimeVersion = '4'
             operatingSystem = 'Linux'; identity = 'SystemAssigned'; plan = 'FlexConsumption'
             httpsOnly = $true; minimumTlsVersion = '1.2'
             instanceMemoryMB = $configuration.instanceMemoryMB
             maximumInstanceCount = $configuration.maximumInstanceCount
+            storageRoles = @('Storage Blob Data Owner', 'Storage Queue Data Contributor', 'Storage Table Data Contributor')
+            keyVaultRole = 'Key Vault Secrets User'
         }
     }
     ApplicationSettings = $settings
     Prerequisites = $prerequisites
     Compilation = $compilation
     Phases = $phases
-    UnresolvedValues = $(if ($Mode -eq 'DeployIdentity') {
+    UnresolvedValues = $(if ($Mode -eq 'DeployFunctions') { @() }
+    elseif ($Mode -eq 'DeployIdentity') {
         @('APPLICATIONINSIGHTS_CONNECTION_STRING')
     }
     else { @('INVENTORY_TENANT_ID', 'INVENTORY_CLIENT_ID', 'APPLICATIONINSIGHTS_CONNECTION_STRING') })

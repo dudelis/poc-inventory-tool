@@ -8,8 +8,10 @@ The [portable deployment package](deploy/README.md) supports offline planning an
 explicit deployment of the dedicated Azure foundation (resource group, storage,
 RBAC Key Vault, Log Analytics, and Application Insights), plus interactive
 tenant-local runtime identity provisioning, Global Reader assignment, and secure
-Key Vault credential storage. Function deployment and Power Platform readiness
-phases are not automated yet.
+Key Vault credential storage. `DeployFunctions` also deploys the Flex Consumption
+workload, managed-identity roles and settings, publishes code, and verifies host
+health with timers disabled by default. Logging import and Power Platform readiness
+are not automated yet. Timer enablement, schedules, and limits are IaC-owned inputs.
 
 Start with the [prerequisites](docs/prerequisites.md): Azure resources, Key Vault,
 Entra and Dataverse permissions, and the values to collect before deployment.
@@ -50,6 +52,12 @@ The app uses `APPLICATIONINSIGHTS_CONNECTION_STRING`; instrumentation-key config
 - `ExternalDurablePowerShellSDK=true` (uses the standalone Durable SDK bundled in
   `src/Modules`)
 - `FUNCTIONS_EXTENSION_VERSION=~4`
+
+The three `FUNCTIONS_*` runtime settings above are for local/non-Flex hosts. The
+portable Flex deployment selects PowerShell 7.6 through resource properties and
+uses the platform-managed v4 host, without those deprecated app settings.
+Its Agent/RPA schedules are 00:00/01:00 UTC, with both timers disabled and create
+cap/RPA parallelism both 5; the local historical defaults above remain unchanged.
 
 The Agent sync timer starts the fixed `agent-builder-inventory-sync` orchestration instance. Use
 the timer function's **Test/Run** action for a manual run; an active instance causes the request

@@ -1,4 +1,4 @@
-# Inventory deployment: planning, Azure foundation, and runtime identity
+# Inventory deployment: planning, foundation, identity, and Functions
 
 The portable package supports offline planning (#11) and explicit Azure foundation
 deployment (#12), plus tenant-local runtime identity and credential provisioning
@@ -6,13 +6,16 @@ deployment (#12), plus tenant-local runtime identity and credential provisioning
 Log Analytics, and workspace-based Application Insights. `DeployIdentity` also
 authenticates interactively with Microsoft Graph, establishes the managed app and
 service principal, assigns Global Reader, and stores a bounded credential in Key Vault.
-Neither mode deploys a Function App, publishes Functions, imports solutions, or
-enables timers. The remaining bootstrap phases are delivered by subsequent tickets
-under #10.
+`DeployFunctions` runs those phases, deploys the Linux Flex Consumption workload,
+publishes the repository Functions, and validates the host with both timers disabled
+by default (#14). Solution import and Power Platform readiness remain subsequent
+tickets under #10.
 
 [main.bicep](./main.bicep) declares the shared input contract and has no resources.
 The bootstrap deploys [foundation-group.bicep](./foundation-group.bicep) at subscription
 scope and [foundation.bicep](./foundation.bicep) incrementally at resource-group scope.
+[functions.bicep](./functions.bicep) incrementally deploys the Function hosting plan,
+app, private deployment container, runtime settings, and managed-identity roles.
 
 ## Validate and inspect a plan
 
@@ -199,6 +202,104 @@ complete. Function deployment and all later phases remain pending. The returned
 app settings resolve tenant/client IDs but keep the versionless Key Vault reference;
 no Function settings are applied by this mode.
 
+## Deploy and validate the Functions
+
+This mode makes live Azure and Microsoft Entra changes and publishes code. It runs
+all foundation/identity/credential checks first. Keep those permissions and install
+Functions Core Tools **v4** yourself. The operator additionally needs permission to
+deploy `Microsoft.Web` resources, publish to the app, and create/read Azure role
+assignments on the storage account and vault (for example Contributor plus Role
+Based Access Control Administrator at the dedicated group). Register `Microsoft.Web`
+and confirm Flex Consumption and PowerShell 7.6 availability/quota in the selected
+region. Power Platform CLI is not required by this mode.
+
+Supply real `subscriptionId`, an **HTTPS** `targetDataverseUrl`, and one confirmed
+`agentCreatedIn` string in the ignored parameter file; placeholder authoring-tool
+values are refused. Keep both timer flags false until Power Platform permissions,
+logging import, and smoke runs have been verified separately.
+
+```powershell
+$runtime = .\deploy\Invoke-InventoryDeployment.ps1 `
+    -Mode DeployFunctions `
+    -TenantId <tenant-id> `
+    -ConfigurationPath .\deploy\.local\parameters.json `
+    -StatePath .\deploy\.local\deployment.state.json
+
+$runtime | Select-Object Status, CloudChangesMade, FunctionDeploymentImplemented
+$runtime.FunctionValidation
+$runtime.Phases | Format-Table Id, Status, SavedStatus, NeedsRevalidation
+```
+
+The app uses Linux Flex Consumption (`FC1`), Functions v4, PowerShell 7.6, 2,048 MB
+instances, and maximum 20 instances by default. Runtime selection is in
+`functionAppConfig.runtime`; Flex manages the Functions v4 host itself. Deprecated
+`FUNCTIONS_EXTENSION_VERSION`, `FUNCTIONS_WORKER_RUNTIME`, and
+`FUNCTIONS_WORKER_RUNTIME_VERSION` app settings are deliberately not deployed.
+These settings still apply to local development. See Microsoft's
+[Flex app-setting deprecations](https://learn.microsoft.com/azure/azure-functions/functions-app-settings#flex-consumption-plan-deprecations).
+
+The system-assigned identity receives **Storage Blob Data Owner**, **Storage Queue
+Data Contributor**, and **Storage Table Data Contributor** on the dedicated storage
+account, and **Key Vault Secrets User** on the vault. Blob Data Owner covers the host
+and deployment-container access; queue/table roles also support Durable storage.
+Both host and Durable use `AzureWebJobsStorage__accountName` plus
+`AzureWebJobsStorage__credential=managedidentity`. Deployment storage also uses the
+system identity. No storage key, Azure Files connection, or run-from-package setting
+is applied. The runtime service principal is separate from this managed identity.
+
+All runtime inputs, versionless secret reference, standalone Durable SDK setting,
+logging entity sets, exclusions, URL column, schedules, and limits are IaC-owned.
+Bicep reads the telemetry connection string from the managed Application Insights
+resource. Both schedules are stored even while disabled: Agent **00:00 UTC**, RPA
+**01:00 UTC**. The initial create cap and RPA parallelism are **5**.
+
+Each deployment first applies disabled timer settings, including on reruns. Existing
+untagged, ambiguous, or incompatible app/hosting-plan resources are refused, not
+adopted or migrated. After infrastructure succeeds, live checks verify the app/plan,
+runtime/scale/security properties, exact role scopes/principal, sanitized settings,
+and `Resolved` Key Vault reference status. Only then does Core Tools publish from
+the repository's `src` directory. Local settings files are excluded by
+[.funcignore](../src/.funcignore); the bootstrap never publishes local app settings
+or requests function keys. Raw deployment/publication/settings diagnostics are
+suppressed because they can contain credentials.
+
+Post-publication checks require exactly the repository's six Functions, matching
+timer disabled states, and a running, error-free Functions v4 host through the
+Azure-authenticated host-status API. `FunctionsValidated` marks the first five phases
+complete, not Power Platform readiness. `DeploymentImplemented` remains false until
+the remaining phases are implemented. No inventory sync is invoked as a health check.
+
+RBAC/reference propagation, publication, indexing, or host failures stop the command,
+leave Function completion pending, and do not create another runtime credential on
+rerun. Wait for propagation or correct the reported problem, inspect Azure deployment
+operations and Application Insights without sharing credentials, and rerun the same
+command/state. The workflow is fail-fast rather than an unbounded polling loop.
+Before changing timer state, make sure no existing orchestration is running: disabling
+timers does not cancel work already in progress.
+
+### Deliberate timer enablement and operational changes
+
+After completing Power Platform setup and smoke checks, edit the ignored input JSON
+and rerun `Plan`, then `DeployFunctions`. Use a **new state filename** when input values
+change; the strict configuration fingerprint intentionally rejects an old state.
+Resource names and managed identity/credential discovery remain stable.
+
+| Input | Default | Effect |
+| --- | --- | --- |
+| `agentTimerEnabled`, `rpaTimerEnabled` | `false` | Explicit opt-in to each timer |
+| `agentSchedule`, `rpaSchedule` | `0 0 0 * * *`, `0 0 1 * * *` | UTC NCRONTAB schedules |
+| `maxCreatesPerRun` | `5` | Shared per-run creation cap |
+| `rpaMaxParallelEnvironments` | `5` | Concurrent source environment reads |
+| `instanceMemoryMB`, `maximumInstanceCount` | `2048`, `20` | Flex instance memory and scale cap |
+
+When a timer flag is true, deployment still publishes and validates with both timers
+disabled first. Only after those gates succeed does a **second incremental Bicep
+deployment** apply the requested opt-in; resource/settings/reference/function/host
+checks run again. No second code publication occurs. Timers can start immediately
+after that explicit activation; activation or subsequent validation failures do not
+roll back cloud changes automatically. To disable them, set both flags false and
+rerun with a new state filename. Never create lasting portal/CLI app-setting drift.
+
 ## Installation configuration
 
 For a local configuration, copy the example to an ignored directory:
@@ -265,22 +366,24 @@ Existing state is strictly validated. Unknown fields, unknown statuses, unexpect
 phase order, and a configuration mismatch fail without rewriting the file. Use a
 separate state file when deliberately changing configuration. Do not manually
 mark phases complete to bypass checks. Secrets, tokens, Dataverse URLs, and
-full identity objects do not belong in state. `DeployIdentity` additionally retains
+full identity objects do not belong in state. `DeployIdentity` and `DeployFunctions` additionally retain
 strictly allowlisted identity IDs and non-secret credential expiry/version/recovery
 metadata; it never stores a credential value.
 
 The ordered workflow is preflight, Azure foundation, runtime identity,
 runtime credential, Function deployment, logging solution, and readiness
 validation. Dependencies are included in the plan. `DeployFoundation` executes
-only the first two phases; `DeployIdentity` executes the first four. Function
-deployment, logging import, and readiness validation are not yet implemented.
+only the first two phases; `DeployIdentity` executes the first four;
+`DeployFunctions` executes the first five. Logging import and readiness validation
+are not yet implemented.
 
 ## Tests and command boundary
 
 ```powershell
 Invoke-Pester -Path .\tests\InventoryDeployment.Tests.ps1,`
     .\tests\InventoryDeployment.Foundation.Tests.ps1,`
-    .\tests\InventoryDeployment.Identity.Tests.ps1 -Output Detailed -CI
+    .\tests\InventoryDeployment.Identity.Tests.ps1,`
+    .\tests\InventoryDeployment.Functions.Tests.ps1 -Output Detailed -CI
 ```
 
 Tests use the public bootstrap command. Real Bicep compilation validates the
@@ -294,7 +397,7 @@ credential clock. Sensitive adapters run in an isolated runspace and should capt
 any required fake state in a closure. Tests never contact Azure or Graph.
 Do not use test adapters to bypass validation in normal operation.
 
-The bootstrap returns one plan/foundation/identity result object or raises a terminating error. Native
+The bootstrap returns one plan/foundation/identity/Functions result object or raises a terminating error. Native
 compiler errors are reported with their phase and remediation; later phases
 never run after failure. When invoked using `pwsh -File`, a terminating error
 returns a nonzero process exit code.

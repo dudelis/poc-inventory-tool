@@ -9,7 +9,10 @@ can provision a dedicated Azure foundation after an interactive tenant/subscript
 login, then establish the single-tenant runtime identity, Global Reader assignment,
 and Key Vault credential with `DeployIdentity`. That mode additionally requires
 interactive Microsoft Graph authentication, directory-role assignment privileges,
-and operator Key Vault data-plane access. It does not yet create the Function App. Its deterministic
+and operator Key Vault data-plane access. `DeployFunctions` additionally deploys and
+publishes the Flex Function App with timers disabled by default. It requires Core
+Tools v4, Microsoft.Web availability, publication permissions, and Azure RBAC
+assignment privileges on the dedicated storage account and vault. Its deterministic
 names and ownership tags are separate from the existing manual setup below; do not
 use the screenshot-specific storage/vault names for an automated installation.
 
