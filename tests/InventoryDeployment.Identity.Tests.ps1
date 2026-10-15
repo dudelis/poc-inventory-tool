@@ -576,6 +576,50 @@ Describe 'Runtime identity and Function deployment' {
             $saved.phases[4].status | Should -Be 'Pending'
         }
 
+        It 'accepts a running v4 host with <ErrorShape> errors' -ForEach @(
+            @{ ErrorShape = 'null'; ErrorsJson = 'null' }
+            @{ ErrorShape = 'empty'; ErrorsJson = '[]' }
+        ) {
+            $normalRunner = $functionRunner
+            $hostResponse = '{"properties":{"state":"Running","version":"4.1055.150.26479","errors":' + $ErrorsJson + '}}'
+            $hostRunner = {
+                param($Command, $Arguments, $SensitiveArguments)
+                if (($Arguments -join ' ') -match '/host/default/properties/status') {
+                    return @{ ExitCode = 0; Output = $hostResponse }
+                }
+                & $normalRunner $Command $Arguments $SensitiveArguments
+            }.GetNewClosure()
+
+            $result = & $bootstrapPath -ConfigurationPath $configurationPath -Mode DeployFunctions `
+                -TenantId $tenantId -StatePath $statePath -CommandRunner $hostRunner -GraphRunner $graphRunner
+
+            $result.Status | Should -Be 'FunctionsValidated'
+            $result.FunctionValidation.HostState | Should -Be 'Running'
+            $saved = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json -AsHashtable
+            $saved.phases[4].status | Should -Be 'Completed'
+        }
+
+        It 'rejects a running v4 host that reports an error' {
+            $normalRunner = $functionRunner
+            $hostRunner = {
+                param($Command, $Arguments, $SensitiveArguments)
+                if (($Arguments -join ' ') -match '/host/default/properties/status') {
+                    return @{
+                        ExitCode = 0
+                        Output = '{"properties":{"state":"Running","version":"4.1055.150.26479","errors":["Host initialization failed"]}}'
+                    }
+                }
+                & $normalRunner $Command $Arguments $SensitiveArguments
+            }.GetNewClosure()
+
+            { & $bootstrapPath -ConfigurationPath $configurationPath -Mode DeployFunctions `
+                    -TenantId $tenantId -StatePath $statePath -CommandRunner $hostRunner -GraphRunner $graphRunner } |
+                Should -Throw '*host is not healthy on Functions v4*'
+
+            $saved = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json -AsHashtable
+            $saved.phases[4].status | Should -Be 'Pending'
+        }
+
         It 'refuses completion when the host reports a timer enabled despite disabled app settings' {
             $normalRunner = $functionRunner
             $incorrectTimerRunner = {

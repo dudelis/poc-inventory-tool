@@ -1523,7 +1523,8 @@ if ($Mode -in @('DeployFunctions', 'DeployPowerPlatform')) {
             $hostStatus.properties -isnot [System.Collections.IDictionary] -or
             -not $hostStatus.properties.Contains('state') -or -not $hostStatus.properties.Contains('version') -or
             $hostStatus.properties.state -ne 'Running' -or $hostStatus.properties.version -notmatch '^4\.' -or
-            ($hostStatus.properties.Contains('errors') -and @($hostStatus.properties.errors).Count -gt 0)) {
+            ($hostStatus.properties.Contains('errors') -and $null -ne $hostStatus.properties.errors -and
+                @($hostStatus.properties.errors).Count -gt 0)) {
             throw 'Function deployment: host is not healthy on Functions v4. Inspect host diagnostics and rerun DeployFunctions; do not enable timers.'
         }
     }

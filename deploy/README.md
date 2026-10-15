@@ -267,7 +267,8 @@ suppressed because they can contain credentials.
 
 Post-publication checks require exactly the repository's six Functions, matching
 timer disabled states, and a running, error-free Functions v4 host through the
-Azure-authenticated host-status API. `FunctionsValidated` marks the first five phases
+Azure-authenticated host-status API. Both `errors: null` and an empty error array
+indicate no reported host errors. `FunctionsValidated` marks the first five phases
 complete, not Power Platform readiness. `DeploymentImplemented` remains false until
 the remaining phases are implemented. No inventory sync is invoked as a health check.
 
