@@ -185,6 +185,23 @@ BeforeEach {
         Get-Content -LiteralPath $statePath -Raw | Should -Not -Match 'tenantId|secret|token|operator'
     }
 
+    It 'accepts the Key Vault API omission of an open default network ACL' {
+        $resources[1].properties.Remove('networkAcls')
+
+        $result = & $bootstrapPath -ConfigurationPath $configurationPath -Mode DeployFoundation `
+            -TenantId $tenantId -CommandRunner $runner
+
+        $result.Status | Should -Be 'FoundationValidated'
+    }
+
+    It 'rejects an explicit Key Vault default network deny response' {
+        $resources[1].properties.networkAcls.defaultAction = 'Deny'
+
+        { & $bootstrapPath -ConfigurationPath $configurationPath -Mode DeployFoundation `
+                -TenantId $tenantId -CommandRunner $runner } |
+            Should -Throw '*Azure foundation*networkAcls.defaultAction*'
+    }
+
     It 'refuses to adopt an existing unowned resource before deployment' -ForEach @(
         @{ Conflict = 'group' }
         @{ Conflict = 'storage' }
