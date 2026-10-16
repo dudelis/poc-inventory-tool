@@ -309,10 +309,9 @@ uses `pac env who` to reject a context targeting another environment. It packs
 `solutions/InventorySyncLogging` into a unique temporary archive on every run,
 imports the unmanaged archive into the explicit target URL, publishes
 customizations, verifies the installed unmanaged solution, and queries both logging
-tables. It uses a short-lived token from the interactive CLI profile to compare the
-deployed Dataverse `EntitySetName` metadata with the configured Sync Run and Sync Log
-names and the unpacked solution metadata. The token is neither returned nor persisted.
-The temporary archive is removed whether packing, import,
+tables. Before each live query, it compares the configured Sync Run and Sync Log
+entity-set names with the unpacked solution metadata. No access token is returned or
+persisted by the bootstrap. The temporary archive is removed whether packing, import,
 publication, or verification succeeds or fails; the committed root archive is never
 used by this mode.
 

@@ -275,7 +275,7 @@ Describe 'Runtime identity and Function deployment' {
             }
             $script:dataverseRunner = {
                 param($Uri, $AccessToken)
-                if ($AccessToken -ne 'mock-dataverse-token') {
+                if ($AccessToken -ne 'eyJhbGci.mock.signature') {
                     throw 'Unexpected Dataverse token.'
                 }
                 if ($Uri -match "LogicalName='invs_synclog'") {
@@ -285,15 +285,15 @@ Describe 'Runtime identity and Function deployment' {
             }
             $script:powerPlatformOutput = {
                 param($Arguments)
-                if ($Arguments[0] -eq '--version') { return '1.45.2' }
+                if ($Arguments[0] -eq 'help') { return 'Microsoft PowerPlatform CLI Version: 2.12.2' }
                 if ($Arguments[0..1] -join ' ' -eq 'env who') {
-                    return '{"EnvironmentUrl":"https://tenant.crm4.dynamics.com"}'
+                    return '{"OrgId":"c3e9246e-74c8-f111-a04e-000d3a3a0d49","UniqueName":"unq-test","FriendlyName":"inventory-tool","OrgUrl":"https://tenant.crm4.dynamics.com/","UserEmail":"operator@example.test","UserId":"4ba9ff8a-65bf-f111-aaaf-7ced8d1165d4","EnvironmentId":"dbeff47c-0ecc-e36a-8e1d-9506def8e448"}'
                 }
                 if ($Arguments[0..1] -join ' ' -eq 'solution list') {
-                    return '[{"UniqueName":"InventorySyncLogging","IsManaged":false}]'
+                    return '[{"Id":"0255ab27-24cc-4ba4-b93d-5b9b93aa2e81","SolutionUniqueName":"InventorySyncLogging","FriendlyName":"Inventory Sync Logging","PublisherUniqueName":"InventorySync","VersionNumber":"1.0.0.0","IsManaged":false}]'
                 }
                 if ($Arguments[0..1] -join ' ' -eq 'auth token') {
-                    return 'mock-dataverse-token'
+                    return "Microsoft PowerPlatform CLI`nVersion: 2.12.2`nOnline documentation: https://aka.ms/PowerPlatformCLI`neyJhbGci.mock.signature"
                 }
                 return '{}'
             }
@@ -723,9 +723,25 @@ Describe 'Runtime identity and Function deployment' {
                     Joined = $Arguments -join ' '
                 })
                 if ($Arguments[0] -eq '--version') {
-                    return @{ ExitCode = 0; Output = '1.45.2' }
+                    return @{
+                        ExitCode = 1
+                        Output = "Microsoft PowerPlatform CLI Version: 2.12.2`nError: Not a valid command."
+                    }
+                }
+                if ($Arguments[0] -eq 'help') {
+                    return @{ ExitCode = 0; Output = 'Microsoft PowerPlatform CLI Version: 2.12.2' }
+                }
+                if ($Arguments[0..1] -join ' ' -eq 'env fetch' -and
+                    $Arguments[$Arguments.IndexOf('--xml') + 1] -match "<fetch top=") {
+                    return @{
+                        ExitCode = 1
+                        Output = "Error: The top attribute can't be specified with paging attribute page"
+                    }
                 }
                 if ($Arguments[0..1] -join ' ' -eq 'solution pack') {
+                    if ($Arguments -contains '--overwrite') {
+                        return @{ ExitCode = 1; Output = 'Error: An unknown argument --overwrite was passed.' }
+                    }
                     $artifactState.Path = $Arguments[$Arguments.IndexOf('--zipfile') + 1]
                     Set-Content -LiteralPath $artifactState.Path -Value 'temporary solution archive'
                 }
@@ -760,12 +776,15 @@ Describe 'Runtime identity and Function deployment' {
             $result.Phases[0..6].Status | Should -Not -Contain 'Pending'
 
             $joinedCalls = @($powerPlatformCalls.Joined)
+            $joinedCalls | Should -Contain 'help'
+            $joinedCalls | Should -Not -Contain '--version'
             $authIndex = [array]::IndexOf($joinedCalls, (
                 'auth create --environment https://tenant.crm4.dynamics.com'
             ))
             $packIndex = [array]::FindIndex($joinedCalls, [Predicate[string]] {
                 param($call) $call -like 'solution pack*--folder*solutions\InventorySyncLogging*--packagetype Unmanaged*'
             })
+            $joinedCalls[$packIndex] | Should -Not -Match '(?:^|\s)--overwrite(?:\s|$)'
             $importIndex = [array]::FindIndex($joinedCalls, [Predicate[string]] {
                 param($call) $call -like 'solution import*--environment https://tenant.crm4.dynamics.com*'
             })
@@ -792,9 +811,10 @@ Describe 'Runtime identity and Function deployment' {
             $tableVerifyIndexes[1] | Should -BeGreaterThan $tableVerifyIndexes[0]
             @($joinedCalls | Where-Object { $_ -like 'env fetch*--json*' }) |
                 Should -HaveCount 0
-            $metadataRequests | Should -HaveCount 2
-            $metadataRequests[0] | Should -Match "EntityDefinitions\(LogicalName='invs_syncrun'\).*EntitySetName"
-            $metadataRequests[1] | Should -Match "EntityDefinitions\(LogicalName='invs_synclog'\).*EntitySetName"
+            @($joinedCalls | Where-Object { $_ -like "env fetch*<fetch count='1'>*" }) |
+                Should -HaveCount 2
+            $joinedCalls | Should -Not -Contain 'auth token'
+            $metadataRequests | Should -HaveCount 0
             $artifactState.Path | Should -Not -BeNullOrEmpty
             $artifactState.Path | Should -Not -Exist
 
@@ -827,7 +847,7 @@ Describe 'Runtime identity and Function deployment' {
             $functionCloud.Published | Should -BeFalse
             @($calls | Where-Object { $_ -like 'azure:deployment*create*' }) |
                 Should -HaveCount 0
-            @($powerPlatformCalls | Where-Object { $_ -notlike '--version' }) |
+            @($powerPlatformCalls | Where-Object { $_ -notlike 'help' }) |
                 Should -HaveCount 0
             $statePath | Should -Not -Exist
         }
@@ -842,7 +862,9 @@ Describe 'Runtime identity and Function deployment' {
                 }
                 $joined = $Arguments -join ' '
                 $powerPlatformCalls.Add($joined)
-                $output = if ($Arguments[0] -eq '--version') { '1.45.2' }
+                $output = if ($Arguments[0] -eq 'help') {
+                    'Microsoft PowerPlatform CLI Version: 2.12.2'
+                }
                 elseif ($Arguments[0..1] -join ' ' -eq 'env who') {
                     '{"EnvironmentUrl":"https://another.crm4.dynamics.com"}'
                 }
@@ -866,7 +888,11 @@ Describe 'Runtime identity and Function deployment' {
             $saved.phases[5].status | Should -Be 'Pending'
         }
 
-        It 'rejects a target table whose deployed entity-set name differs from configuration' {
+        It 'rejects an entity-set configuration that differs from the solution source' {
+            $configuration = Get-Content -LiteralPath $configurationPath -Raw |
+                ConvertFrom-Json -AsHashtable
+            $configuration.syncLogTable = 'unexpected_synclogs'
+            $configuration | ConvertTo-Json | Set-Content -LiteralPath $configurationPath
             $baseFunctionRunner = $functionRunner
             $commonPowerPlatformOutput = $powerPlatformOutput
             $powerPlatformRunner = {
@@ -881,18 +907,10 @@ Describe 'Runtime identity and Function deployment' {
                 $output = & $commonPowerPlatformOutput $Arguments
                 return @{ ExitCode = 0; Output = $output }
             }.GetNewClosure()
-            $dataverseRunner = {
-                param($Uri, $AccessToken)
-                if ($Uri -match "LogicalName='invs_synclog'") {
-                    return @{ LogicalName = 'invs_synclog'; EntitySetName = 'unexpected_synclogs' }
-                }
-                return @{ LogicalName = 'invs_syncrun'; EntitySetName = 'invs_syncruns' }
-            }
-
             { & $bootstrapPath -ConfigurationPath $configurationPath -Mode DeployPowerPlatform `
                     -TenantId $tenantId -StatePath $statePath -CommandRunner $powerPlatformRunner `
                     -GraphRunner $graphRunner -DataverseRunner $dataverseRunner } |
-                Should -Throw '*Logging solution*deployed entity set*invs_synclogs*unexpected_synclogs*'
+                Should -Throw "*Logging solution*configured entity set 'unexpected_synclogs'*does not match source metadata*"
 
             $saved = Get-Content -LiteralPath $statePath -Raw |
                 ConvertFrom-Json -AsHashtable

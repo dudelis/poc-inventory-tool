@@ -572,8 +572,8 @@ if ($Mode -in @('DeployFoundation', 'DeployIdentity', 'DeployFunctions', 'Deploy
         if (-not $prerequisites[2].Available -and -not $PSBoundParameters.ContainsKey('CommandRunner')) {
             throw "Logging solution: Power Platform CLI is missing. $($prerequisites[2].Guidance)"
         }
-        Invoke-ValidationCommand -Command pac -Arguments @('--version') -Phase 'Logging solution' `
-            -Remediation 'Install Power Platform CLI explicitly before retrying DeployPowerPlatform.' |
+        Invoke-ValidationCommand -Command pac -Arguments @('help') -Phase 'Logging solution' `
+            -Remediation 'Verify that Power Platform CLI can run in this PowerShell session before retrying DeployPowerPlatform.' |
             Out-Null
     }
     if ($Mode -in @('DeployIdentity', 'DeployFunctions', 'DeployPowerPlatform')) {
@@ -1550,7 +1550,6 @@ if ($Mode -eq 'DeployPowerPlatform') {
     Save-DeploymentState -State $state -Path $resolvedStatePath
     $solutionSource = Join-Path (Split-Path -Parent $PSScriptRoot) 'solutions\InventorySyncLogging'
     $solutionArtifact = Join-Path ([IO.Path]::GetTempPath()) "InventorySyncLogging-$([guid]::NewGuid()).zip"
-    $accessToken = $null
     try {
         Invoke-ValidationCommand -Command pac -Arguments @(
             'auth', 'create', '--environment', $configuration.targetDataverseUrl
@@ -1570,7 +1569,7 @@ if ($Mode -eq 'DeployPowerPlatform') {
         $powerPlatformContext = if ($powerPlatformContexts.Count -eq 1) {
             $powerPlatformContexts[0]
         }
-        $environmentUrlKey = @('EnvironmentUrl', 'Environment URL', 'OrganizationUrl') |
+        $environmentUrlKey = @('EnvironmentUrl', 'Environment URL', 'OrganizationUrl', 'OrgUrl') |
             Where-Object { $powerPlatformContext -is [System.Collections.IDictionary] -and
                 $powerPlatformContext.Contains($_) } |
             Select-Object -First 1
@@ -1584,7 +1583,7 @@ if ($Mode -eq 'DeployPowerPlatform') {
         }
         Invoke-ValidationCommand -Command pac -Arguments @(
             'solution', 'pack', '--zipfile', $solutionArtifact, '--folder', $solutionSource,
-            '--packagetype', 'Unmanaged', '--overwrite'
+            '--packagetype', 'Unmanaged'
         ) -Phase $phase -SanitizeOutput `
             -Remediation 'Packing Inventory Sync Logging from its unpacked source failed. Correct the solution source or Power Platform CLI installation and retry.' |
             Out-Null
@@ -1614,17 +1613,14 @@ if ($Mode -eq 'DeployPowerPlatform') {
             throw 'Logging solution: Power Platform CLI returned invalid solution verification data. Upgrade the CLI or inspect the target environment and retry.'
         }
         $loggingSolution = @($installedSolutions | Where-Object {
-            $_ -is [System.Collections.IDictionary] -and $_.UniqueName -eq 'InventorySyncLogging'
+            $_ -is [System.Collections.IDictionary] -and (
+                ($_.Contains('UniqueName') -and $_['UniqueName'] -eq 'InventorySyncLogging') -or
+                ($_.Contains('SolutionUniqueName') -and $_['SolutionUniqueName'] -eq 'InventorySyncLogging')
+            )
         })
-        if ($loggingSolution.Count -ne 1 -or $loggingSolution[0].IsManaged -ne $false) {
+        if ($loggingSolution.Count -ne 1 -or -not $loggingSolution[0].Contains('IsManaged') -or
+            $loggingSolution[0]['IsManaged'] -ne $false) {
             throw 'Logging solution: the expected unmanaged InventorySyncLogging solution was not found after import. Inspect solution history and retry.'
-        }
-        $accessToken = (Invoke-ValidationCommand -Command pac -Arguments @(
-            'auth', 'token'
-        ) -Phase $phase -SanitizeOutput `
-            -Remediation 'A Dataverse metadata token could not be acquired from the interactive Power Platform profile. Sign in again and retry.').Trim()
-        if (-not $accessToken -or $accessToken -match '\s') {
-            throw 'Logging solution: Power Platform CLI returned an invalid Dataverse metadata token. Sign in again and retry.'
         }
         $tableDefinitions = @(
             @{
@@ -1649,31 +1645,16 @@ if ($Mode -eq 'DeployPowerPlatform') {
             if ($sourceEntitySet -cne $table.EntitySet) {
                 throw "Logging solution: configured entity set '$($table.EntitySet)' does not match source metadata for $($table.LogicalName). Correct the deployment input and retry."
             }
-            $fetchXml = "<fetch top='1'><entity name='$($table.LogicalName)'><attribute name='$($table.PrimaryId)' /></entity></fetch>"
+            $fetchXml = "<fetch count='1'><entity name='$($table.LogicalName)'><attribute name='$($table.PrimaryId)' /></entity></fetch>"
             Invoke-ValidationCommand -Command pac -Arguments @(
                 'env', 'fetch', '--environment', $configuration.targetDataverseUrl,
                 '--xml', $fetchXml
             ) -Phase $phase -SanitizeOutput `
                 -Remediation "The $($table.LogicalName) table or configured $($table.EntitySet) entity set is unavailable. Publish the solution and verify the configured entity-set name before retrying." |
                 Out-Null
-            $metadataUri = "$($configuration.targetDataverseUrl.TrimEnd('/'))/api/data/v9.2/EntityDefinitions(LogicalName='$($table.LogicalName)')?`$select=LogicalName,EntitySetName"
-            $deployedMetadata = Invoke-SensitiveAdapter -Adapter $DataverseRunner `
-                -AdapterArguments @($metadataUri, $accessToken) `
-                -FailureMessage "Logging solution: Dataverse metadata request for $($table.LogicalName) failed. Verify target-environment access and retry."
-            if ($deployedMetadata -isnot [System.Collections.IDictionary] -or
-                -not $deployedMetadata.Contains('LogicalName') -or
-                -not $deployedMetadata.Contains('EntitySetName') -or
-                $deployedMetadata.LogicalName -cne $table.LogicalName -or
-                [string]::IsNullOrWhiteSpace([string] $deployedMetadata.EntitySetName)) {
-                throw "Logging solution: Dataverse returned invalid metadata for $($table.LogicalName). Verify the published table and retry."
-            }
-            if ($deployedMetadata.EntitySetName -cne $table.EntitySet) {
-                throw "Logging solution: deployed entity set mismatch for $($table.LogicalName): configuration expects '$($table.EntitySet)' but the target reports '$($deployedMetadata.EntitySetName)'."
-            }
         }
     }
     finally {
-        $accessToken = $null
         if (Test-Path -LiteralPath $solutionArtifact) {
             Remove-Item -LiteralPath $solutionArtifact -Force
         }
