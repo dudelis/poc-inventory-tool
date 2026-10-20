@@ -823,10 +823,13 @@ Describe 'Runtime identity and Function deployment' {
             $saved.phases[6].status | Should -Be 'Completed'
         }
 
-        It 'refuses timer enablement until the reported readiness checks are confirmed' {
+        It 'refuses <TimerInput> enablement until the reported readiness checks are confirmed' -ForEach @(
+            @{ TimerInput = 'agentTimerEnabled' }
+            @{ TimerInput = 'rpaTimerEnabled' }
+        ) {
             $configuration = Get-Content -LiteralPath $configurationPath -Raw |
                 ConvertFrom-Json -AsHashtable
-            $configuration.agentTimerEnabled = $true
+            $configuration[$TimerInput] = $true
             $configuration | ConvertTo-Json | Set-Content -LiteralPath $configurationPath
             $baseFunctionRunner = $functionRunner
             $powerPlatformCalls = [System.Collections.Generic.List[string]]::new()
@@ -888,6 +891,47 @@ Describe 'Runtime identity and Function deployment' {
             $saved.phases[5].status | Should -Be 'Pending'
         }
 
+        It 'requires an explicitly unmanaged solution before verifying logging tables' -ForEach @(
+            @{ SolutionJson = '[{"SolutionUniqueName":"InventorySyncLogging","IsManaged":"false"}]' }
+            @{ SolutionJson = '[{"SolutionUniqueName":"InventorySyncLogging","IsManaged":true}]' }
+            @{ SolutionJson = '[{"SolutionUniqueName":"InventorySyncLogging"}]' }
+            @{ SolutionJson = '[]' }
+            @{ SolutionJson = 'not json' }
+        ) {
+            $baseFunctionRunner = $functionRunner
+            $commonPowerPlatformOutput = $powerPlatformOutput
+            $powerPlatformCalls = [System.Collections.Generic.List[string]]::new()
+            $artifactPaths = [System.Collections.Generic.List[string]]::new()
+            $verificationRunner = {
+                param($Command, $Arguments, $SensitiveArguments)
+                if ($Command -ne 'pac') {
+                    return & $baseFunctionRunner $Command $Arguments $SensitiveArguments
+                }
+                $powerPlatformCalls.Add($Arguments -join ' ')
+                if ($Arguments[0..1] -join ' ' -eq 'solution pack') {
+                    $path = $Arguments[$Arguments.IndexOf('--zipfile') + 1]
+                    $artifactPaths.Add($path)
+                    Set-Content -LiteralPath $path -Value 'temporary solution archive'
+                }
+                if ($Arguments[0..1] -join ' ' -eq 'solution list') {
+                    return @{ ExitCode = 0; Output = $SolutionJson }
+                }
+                return @{ ExitCode = 0; Output = (& $commonPowerPlatformOutput $Arguments) }
+            }.GetNewClosure()
+
+            { & $bootstrapPath -ConfigurationPath $configurationPath -Mode DeployPowerPlatform `
+                    -TenantId $tenantId -StatePath $statePath -CommandRunner $verificationRunner `
+                    -GraphRunner $graphRunner } |
+                Should -Throw '*Logging solution*'
+
+            @($powerPlatformCalls | Where-Object { $_ -like 'env fetch*' }) |
+                Should -HaveCount 0
+            $artifactPaths | Should -HaveCount 1
+            $artifactPaths[0] | Should -Not -Exist
+            $saved = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json -AsHashtable
+            $saved.phases[5..6].status | Should -Be @('Pending', 'Pending')
+        }
+
         It 'rejects an entity-set configuration that differs from the solution source' {
             $configuration = Get-Content -LiteralPath $configurationPath -Raw |
                 ConvertFrom-Json -AsHashtable
@@ -944,6 +988,16 @@ Describe 'Runtime identity and Function deployment' {
                 ErrorPattern = '*Logging solution*could not be verified*'
                 ForbiddenPattern = 'env fetch*'
             }
+            @{
+                Stage = 'Sync Run table verification'; FailurePattern = "*env fetch*name='invs_syncrun'*"
+                ErrorPattern = '*Logging solution*invs_syncrun table*unavailable*'
+                ForbiddenPattern = "*env fetch*name='invs_synclog'*"
+            }
+            @{
+                Stage = 'Sync Log table verification'; FailurePattern = "*env fetch*name='invs_synclog'*"
+                ErrorPattern = '*Logging solution*invs_synclog table*unavailable*'
+                ForbiddenPattern = 'solution publish*'
+            }
         ) {
             $baseFunctionRunner = $functionRunner
             $commonPowerPlatformOutput = $powerPlatformOutput
@@ -973,8 +1027,14 @@ Describe 'Runtime identity and Function deployment' {
                     -GraphRunner $graphRunner -DataverseRunner $dataverseRunner } |
                 Should -Throw $ErrorPattern
 
-            @($powerPlatformCalls | Where-Object { $_ -like $ForbiddenPattern }) |
+            $failedIndex = [array]::FindIndex($powerPlatformCalls.ToArray(), [Predicate[string]] {
+                param($call) $call -like $FailurePattern
+            })
+            $failedIndex | Should -BeGreaterThan -1
+            @($powerPlatformCalls | Select-Object -Skip ($failedIndex + 1) |
+                Where-Object { $_ -like $ForbiddenPattern }) |
                 Should -HaveCount 0
+            $powerPlatformCalls | Should -HaveCount ($failedIndex + 1)
             foreach ($artifactPath in $artifactPaths) {
                 $artifactPath | Should -Not -Exist
             }
@@ -983,6 +1043,57 @@ Describe 'Runtime identity and Function deployment' {
             $saved.phases[4].status | Should -Be 'Completed'
             $saved.phases[5].status | Should -Be 'Pending'
             $saved.phases[6].status | Should -Be 'Pending'
+        }
+
+        It 'invalidates saved readiness when logging revalidation fails and repacks on recovery' {
+            $baseFunctionRunner = $functionRunner
+            $commonPowerPlatformOutput = $powerPlatformOutput
+            $artifactPaths = [System.Collections.Generic.List[string]]::new()
+            $failureState = @{ PublicationFails = $false }
+            $revalidationRunner = {
+                param($Command, $Arguments, $SensitiveArguments)
+                if ($Command -ne 'pac') {
+                    return & $baseFunctionRunner $Command $Arguments $SensitiveArguments
+                }
+                if ($Arguments[0..1] -join ' ' -eq 'solution pack') {
+                    $path = $Arguments[$Arguments.IndexOf('--zipfile') + 1]
+                    $artifactPaths.Add($path)
+                    Set-Content -LiteralPath $path -Value 'fresh temporary solution archive'
+                }
+                if ($Arguments[0..1] -join ' ' -eq 'solution publish' -and
+                    $failureState.PublicationFails) {
+                    return @{ ExitCode = 1; Output = 'transient publication failure' }
+                }
+                return @{ ExitCode = 0; Output = (& $commonPowerPlatformOutput $Arguments) }
+            }.GetNewClosure()
+            $arguments = @{
+                ConfigurationPath = $configurationPath; Mode = 'DeployPowerPlatform'
+                TenantId = $tenantId; StatePath = $statePath
+                CommandRunner = $revalidationRunner; GraphRunner = $graphRunner
+            }
+
+            $first = & $bootstrapPath @arguments
+            $first.Status | Should -Be 'DeploymentCompletedReadinessBlocked'
+            $failureState.PublicationFails = $true
+
+            { & $bootstrapPath @arguments } |
+                Should -Throw '*Logging solution*Publishing Dataverse customizations failed*'
+
+            $saved = Get-Content -LiteralPath $statePath -Raw | ConvertFrom-Json -AsHashtable
+            $saved.phases[4].status | Should -Be 'Completed'
+            $saved.phases[5].status | Should -Be 'Pending'
+            $saved.phases[6].status | Should -Be 'Pending'
+            foreach ($path in $artifactPaths) { $path | Should -Not -Exist }
+
+            $failureState.PublicationFails = $false
+            $recovered = & $bootstrapPath @arguments
+
+            $recovered.RuntimeReadiness.Status | Should -Be 'Blocked'
+            $recovered.RuntimeReadiness.TimerEnablementAllowed | Should -BeFalse
+            $recovered.Phases[5..6].Status | Should -Be @('Completed', 'Completed')
+            $artifactPaths | Should -HaveCount 3
+            @($artifactPaths | Select-Object -Unique) | Should -HaveCount 3
+            foreach ($path in $artifactPaths) { $path | Should -Not -Exist }
         }
 
         It 'resumes safely after a transient solution import failure' {

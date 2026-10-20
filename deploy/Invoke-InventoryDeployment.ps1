@@ -1547,6 +1547,7 @@ $runtimeReadiness = $null
 if ($Mode -eq 'DeployPowerPlatform') {
     $phase = 'Logging solution'
     $state.phases[5].status = 'Pending'
+    $state.phases[6].status = 'Pending'
     Save-DeploymentState -State $state -Path $resolvedStatePath
     $solutionSource = Join-Path (Split-Path -Parent $PSScriptRoot) 'solutions\InventorySyncLogging'
     $solutionArtifact = Join-Path ([IO.Path]::GetTempPath()) "InventorySyncLogging-$([guid]::NewGuid()).zip"
@@ -1619,6 +1620,7 @@ if ($Mode -eq 'DeployPowerPlatform') {
             )
         })
         if ($loggingSolution.Count -ne 1 -or -not $loggingSolution[0].Contains('IsManaged') -or
+            $loggingSolution[0]['IsManaged'] -isnot [bool] -or
             $loggingSolution[0]['IsManaged'] -ne $false) {
             throw 'Logging solution: the expected unmanaged InventorySyncLogging solution was not found after import. Inspect solution history and retry.'
         }

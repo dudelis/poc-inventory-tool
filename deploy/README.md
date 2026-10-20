@@ -334,8 +334,10 @@ PALP solution, create application users, assign security roles, populate Environ
 rows or URLs, activate the alternate key, or run an inventory sync. Complete those
 tenant-sensitive checks using the operations guide. Authentication, packing, import,
 publication, and verification failures stop immediately, keep the logging phase
-pending, retain earlier non-secret completion metadata, and can be retried with the
-same configuration and state.
+and its dependent readiness phase pending (including after a previously successful
+run), retain earlier non-secret completion metadata, and can be retried with the
+same configuration and state. Recovery authenticates, repacks, imports, publishes,
+and verifies again rather than trusting saved completion or a previous archive.
 
 ### Deliberate timer enablement and operational changes
 
