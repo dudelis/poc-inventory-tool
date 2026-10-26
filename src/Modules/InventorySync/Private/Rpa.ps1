@@ -14,6 +14,13 @@ function Get-RpaEnvironmentPlan {
             $null = $excluded.Add($sku.Trim())
         }
     }
+    $skuNames = @{
+        '1' = 'Standard'
+        '2' = 'Sandbox'
+        '3' = 'Production'
+        '4' = 'Teams'
+        '5' = 'Developer'
+    }
 
     $selected = [System.Collections.Generic.List[object]]::new()
     $logs = [System.Collections.Generic.List[object]]::new()
@@ -27,8 +34,9 @@ function Get-RpaEnvironmentPlan {
         }
         $nameProperty = $environment.PSObject.Properties['palp_name']
         $name = if ($null -ne $nameProperty) { [string] $nameProperty.Value } else { '' }
-        $skuProperty = $environment.PSObject.Properties['palp_sku']
-        $sku = if ($null -ne $skuProperty) { [string] $skuProperty.Value } else { '' }
+        $skuProperty = $environment.PSObject.Properties['palp_environmentsku']
+        $skuValue = if ($null -ne $skuProperty) { [string] $skuProperty.Value } else { '' }
+        $sku = if ($skuNames.ContainsKey($skuValue)) { $skuNames[$skuValue] } else { $skuValue }
         $urlProperty = $environment.PSObject.Properties[$UrlColumn]
         $url = if ($null -ne $urlProperty) { [string] $urlProperty.Value } else { '' }
         $stateProperty = $environment.PSObject.Properties['statecode']
@@ -43,7 +51,7 @@ function Get-RpaEnvironmentPlan {
         $reason = if ([string]::IsNullOrWhiteSpace($id)) {
             'Environment has no Admin GUID in palp_adminguid.'
         }
-        elseif ($excluded.Contains($sku)) {
+        elseif ($excluded.Contains($sku) -or $excluded.Contains($skuValue)) {
             "Environment SKU '$sku' is excluded."
         }
         elseif ($isRemoved) {
@@ -379,7 +387,7 @@ function Invoke-RpaSync {
         $baseUrl = $Configuration.TargetDataverseUrl.TrimEnd('/')
         $urlColumn = [string] $Configuration.RpaEnvironmentUrlColumn
         $environmentQuery = 'palp_environments?' +
-            "`$select=palp_adminguid,palp_environmentid,palp_name,palp_sku,statecode,$urlColumn"
+            "`$select=palp_adminguid,palp_environmentid,palp_name,palp_environmentsku,statecode,$urlColumn"
         $environmentRows = @(Get-DataversePagedRecords `
             -Uri "$baseUrl/api/data/v9.2/$environmentQuery" -AccessToken $DataverseAccessToken)
         $environmentPlan = Get-RpaEnvironmentPlan -Environments $environmentRows `

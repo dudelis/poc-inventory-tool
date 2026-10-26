@@ -462,12 +462,12 @@ The result also shows the actual `createdIn` values for agents (needed for
 These must be resolved in the code before the first deployment; they are not customer
 tasks, but they affect the setup above.
 
-1. **RPA environment list.** The RPA sync reads `palp_environment` columns that do not
-   exist in PALP 2.21.0.1 (`palp_sku`, the URL column `palp_dataverseurl`). The
-   environment list and type filter are to move to Resource Graph
-   (`microsoft.powerplatform/environments`, `properties.environmentType`). Resource
-   Graph does not document a Dataverse URL for environments, so the source of each
-   environment's URL is still open.
-2. **Function timeout.** Each sync runs in a single Durable activity. Flex Consumption
+The RPA sync uses the existing customer columns `palp_environmentsku` for numeric SKU
+choices and `palp_cdsuniquename` (`palp_CDSUniqueName`) for each source Dataverse URL.
+No PALP schema changes are required. Existing deployments configured with
+`INVENTORY_RPA_ENVIRONMENT_URL_COLUMN=palp_dataverseurl` must change that setting to
+`palp_cdsuniquename` (and update any deployment parameter override).
+
+1. **Function timeout.** Each sync runs in a single Durable activity. Flex Consumption
    defaults to a 30-minute function timeout; large tenants may need `functionTimeout`
    raised in `host.json`.

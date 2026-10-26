@@ -48,6 +48,7 @@ Describe 'Offline inventory deployment contract' {
         $plan.ApplicationSettings.INVENTORY_RPA_SCHEDULE | Should -Be '0 0 1 * * *'
         $plan.ApplicationSettings.INVENTORY_MAX_CREATES_PER_RUN | Should -Be '5'
         $plan.ApplicationSettings.INVENTORY_RPA_MAX_PARALLEL_ENVIRONMENTS | Should -Be '5'
+        $plan.ApplicationSettings.INVENTORY_RPA_ENVIRONMENT_URL_COLUMN | Should -Be 'palp_cdsuniquename'
         $plan.ApplicationSettings.AzureWebJobsStorage__credential | Should -Be 'managedidentity'
         $plan.ApplicationSettings.Contains('AzureWebJobsStorage') | Should -BeFalse
         $plan.ApplicationSettings.INVENTORY_CLIENT_SECRET | Should -BeLike '@Microsoft.KeyVault(SecretUri=https://*/secrets/inventory-sync-client-secret/)'

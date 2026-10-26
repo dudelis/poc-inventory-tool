@@ -1,3 +1,3 @@
-param($Input)
+param($ActivityInput)
 
-Invoke-InventorySyncActivity -SyncType RPA -InputObject $Input
+Invoke-InventorySyncActivity -SyncType RPA -InputObject $ActivityInput -ErrorAction Stop

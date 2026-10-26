@@ -14,6 +14,21 @@ Describe 'Inventory Sync Logging Dataverse solution' {
         @($rootComponents | Where-Object type -eq '10') | Should -HaveCount 0
     }
 
+    It 'exposes every non-key attribute to the Web API for create, read, and update' {
+        foreach ($entity in 'invs_syncrun', 'invs_synclog') {
+            [xml] $xml = Get-Content (Join-Path $solutionRoot "Entities\$entity\Entity.xml") -Raw
+            $attributes = @($xml.Entity.EntityInfo.entity.attributes.attribute |
+                Where-Object { $_.Type -ne 'primarykey' -and $_.DisplayMask -notmatch 'PrimaryName' })
+
+            $attributes | Should -Not -BeNullOrEmpty
+            foreach ($attribute in $attributes) {
+                foreach ($flag in 'ValidForCreateApi', 'ValidForReadApi', 'ValidForUpdateApi') {
+                    "$entity.$($attribute.Name).$flag=$($attribute.$flag)" | Should -Be "$entity.$($attribute.Name).$flag=1"
+                }
+            }
+        }
+    }
+
     It 'defines every Sync Run field and option' {
         $xml = Get-Content (Join-Path $solutionRoot 'Entities\invs_syncrun\Entity.xml') -Raw
         $fields = @(

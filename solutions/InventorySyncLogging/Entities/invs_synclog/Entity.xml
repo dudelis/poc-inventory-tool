@@ -28,6 +28,8 @@
         </attribute>
         <attribute PhysicalName="invs_SyncRunId">
           <Type>lookup</Type><Name>invs_syncrunid</Name><LogicalName>invs_syncrunid</LogicalName>
+          <ValidForCreateApi>1</ValidForCreateApi><ValidForReadApi>1</ValidForReadApi><ValidForUpdateApi>1</ValidForUpdateApi>
+          <DisplayMask>ValidForAdvancedFind|ValidForForm|ValidForGrid</DisplayMask>
           <RequiredLevel>applicationrequired</RequiredLevel><LookupStyle>single</LookupStyle>
           <LookupTypes />
           <IsCustomField>1</IsCustomField>
@@ -35,6 +37,8 @@
         </attribute>
         <attribute PhysicalName="invs_Severity">
           <Type>picklist</Type><Name>invs_severity</Name><LogicalName>invs_severity</LogicalName>
+          <ValidForCreateApi>1</ValidForCreateApi><ValidForReadApi>1</ValidForReadApi><ValidForUpdateApi>1</ValidForUpdateApi>
+          <DisplayMask>ValidForAdvancedFind|ValidForForm|ValidForGrid</DisplayMask>
           <RequiredLevel>applicationrequired</RequiredLevel><IsCustomField>1</IsCustomField>
           <optionset Name="invs_synclog_invs_severity">
             <OptionSetType>picklist</OptionSetType><IsGlobal>0</IsGlobal><IntroducedVersion>1.0.0.0</IntroducedVersion>
@@ -47,6 +51,8 @@
         </attribute>
         <attribute PhysicalName="invs_Category">
           <Type>picklist</Type><Name>invs_category</Name><LogicalName>invs_category</LogicalName>
+          <ValidForCreateApi>1</ValidForCreateApi><ValidForReadApi>1</ValidForReadApi><ValidForUpdateApi>1</ValidForUpdateApi>
+          <DisplayMask>ValidForAdvancedFind|ValidForForm|ValidForGrid</DisplayMask>
           <RequiredLevel>applicationrequired</RequiredLevel><IsCustomField>1</IsCustomField>
           <optionset Name="invs_synclog_invs_category">
             <OptionSetType>picklist</OptionSetType><IsGlobal>0</IsGlobal><IntroducedVersion>1.0.0.0</IntroducedVersion>
@@ -67,51 +73,71 @@
         </attribute>
         <attribute PhysicalName="invs_EnvironmentId">
           <Type>nvarchar</Type><Name>invs_environmentid</Name><LogicalName>invs_environmentid</LogicalName>
+          <ValidForCreateApi>1</ValidForCreateApi><ValidForReadApi>1</ValidForReadApi><ValidForUpdateApi>1</ValidForUpdateApi>
+          <DisplayMask>ValidForAdvancedFind|ValidForForm|ValidForGrid</DisplayMask>
           <RequiredLevel>none</RequiredLevel><MaxLength>100</MaxLength><Format>text</Format><IsCustomField>1</IsCustomField>
           <displaynames><displayname description="Environment ID" languagecode="1033" /></displaynames>
         </attribute>
         <attribute PhysicalName="invs_EnvironmentName">
           <Type>nvarchar</Type><Name>invs_environmentname</Name><LogicalName>invs_environmentname</LogicalName>
+          <ValidForCreateApi>1</ValidForCreateApi><ValidForReadApi>1</ValidForReadApi><ValidForUpdateApi>1</ValidForUpdateApi>
+          <DisplayMask>ValidForAdvancedFind|ValidForForm|ValidForGrid</DisplayMask>
           <RequiredLevel>none</RequiredLevel><MaxLength>200</MaxLength><Format>text</Format><IsCustomField>1</IsCustomField>
           <displaynames><displayname description="Environment Name" languagecode="1033" /></displaynames>
         </attribute>
         <attribute PhysicalName="invs_ComponentType">
           <Type>int</Type><Name>invs_componenttype</Name><LogicalName>invs_componenttype</LogicalName>
+          <ValidForCreateApi>1</ValidForCreateApi><ValidForReadApi>1</ValidForReadApi><ValidForUpdateApi>1</ValidForUpdateApi>
+          <DisplayMask>ValidForAdvancedFind|ValidForForm|ValidForGrid</DisplayMask>
           <RequiredLevel>none</RequiredLevel><MinValue>0</MinValue><MaxValue>2147483647</MaxValue><Format>none</Format>
           <IsCustomField>1</IsCustomField><displaynames><displayname description="Component Type" languagecode="1033" /></displaynames>
         </attribute>
         <attribute PhysicalName="invs_ComponentId">
           <Type>nvarchar</Type><Name>invs_componentid</Name><LogicalName>invs_componentid</LogicalName>
+          <ValidForCreateApi>1</ValidForCreateApi><ValidForReadApi>1</ValidForReadApi><ValidForUpdateApi>1</ValidForUpdateApi>
+          <DisplayMask>ValidForAdvancedFind|ValidForForm|ValidForGrid</DisplayMask>
           <RequiredLevel>none</RequiredLevel><MaxLength>200</MaxLength><Format>text</Format><IsCustomField>1</IsCustomField>
           <displaynames><displayname description="Component ID" languagecode="1033" /></displaynames>
         </attribute>
         <attribute PhysicalName="invs_Operation">
           <Type>nvarchar</Type><Name>invs_operation</Name><LogicalName>invs_operation</LogicalName>
+          <ValidForCreateApi>1</ValidForCreateApi><ValidForReadApi>1</ValidForReadApi><ValidForUpdateApi>1</ValidForUpdateApi>
+          <DisplayMask>ValidForAdvancedFind|ValidForForm|ValidForGrid</DisplayMask>
           <RequiredLevel>none</RequiredLevel><MaxLength>100</MaxLength><Format>text</Format><IsCustomField>1</IsCustomField>
           <displaynames><displayname description="Operation" languagecode="1033" /></displaynames>
         </attribute>
         <attribute PhysicalName="invs_HttpStatus">
           <Type>int</Type><Name>invs_httpstatus</Name><LogicalName>invs_httpstatus</LogicalName>
+          <ValidForCreateApi>1</ValidForCreateApi><ValidForReadApi>1</ValidForReadApi><ValidForUpdateApi>1</ValidForUpdateApi>
+          <DisplayMask>ValidForAdvancedFind|ValidForForm|ValidForGrid</DisplayMask>
           <RequiredLevel>none</RequiredLevel><MinValue>0</MinValue><MaxValue>999</MaxValue><Format>none</Format>
           <IsCustomField>1</IsCustomField><displaynames><displayname description="HTTP Status" languagecode="1033" /></displaynames>
         </attribute>
         <attribute PhysicalName="invs_ErrorCode">
           <Type>nvarchar</Type><Name>invs_errorcode</Name><LogicalName>invs_errorcode</LogicalName>
+          <ValidForCreateApi>1</ValidForCreateApi><ValidForReadApi>1</ValidForReadApi><ValidForUpdateApi>1</ValidForUpdateApi>
+          <DisplayMask>ValidForAdvancedFind|ValidForForm|ValidForGrid</DisplayMask>
           <RequiredLevel>none</RequiredLevel><MaxLength>100</MaxLength><Format>text</Format><IsCustomField>1</IsCustomField>
           <displaynames><displayname description="Error Code" languagecode="1033" /></displaynames>
         </attribute>
         <attribute PhysicalName="invs_ErrorMessage">
           <Type>ntext</Type><Name>invs_errormessage</Name><LogicalName>invs_errormessage</LogicalName>
+          <ValidForCreateApi>1</ValidForCreateApi><ValidForReadApi>1</ValidForReadApi><ValidForUpdateApi>1</ValidForUpdateApi>
+          <DisplayMask>ValidForAdvancedFind|ValidForForm|ValidForGrid</DisplayMask>
           <RequiredLevel>applicationrequired</RequiredLevel><MaxLength>1048576</MaxLength><Format>text</Format>
           <IsCustomField>1</IsCustomField><displaynames><displayname description="Full Error Message" languagecode="1033" /></displaynames>
         </attribute>
         <attribute PhysicalName="invs_OccurredOn">
           <Type>datetime</Type><Name>invs_occurredon</Name><LogicalName>invs_occurredon</LogicalName>
+          <ValidForCreateApi>1</ValidForCreateApi><ValidForReadApi>1</ValidForReadApi><ValidForUpdateApi>1</ValidForUpdateApi>
+          <DisplayMask>ValidForAdvancedFind|ValidForForm|ValidForGrid</DisplayMask>
           <RequiredLevel>applicationrequired</RequiredLevel><Format>datetime</Format><DateTimeBehavior>TimeZoneIndependent</DateTimeBehavior>
           <IsCustomField>1</IsCustomField><displaynames><displayname description="Occurred On" languagecode="1033" /></displaynames>
         </attribute>
         <attribute PhysicalName="invs_CorrelationId">
           <Type>nvarchar</Type><Name>invs_correlationid</Name><LogicalName>invs_correlationid</LogicalName>
+          <ValidForCreateApi>1</ValidForCreateApi><ValidForReadApi>1</ValidForReadApi><ValidForUpdateApi>1</ValidForUpdateApi>
+          <DisplayMask>ValidForAdvancedFind|ValidForForm|ValidForGrid</DisplayMask>
           <RequiredLevel>applicationrequired</RequiredLevel><MaxLength>100</MaxLength><Format>text</Format>
           <IsCustomField>1</IsCustomField><displaynames><displayname description="Correlation ID" languagecode="1033" /></displaynames>
         </attribute>

@@ -93,6 +93,7 @@ function Invoke-InventorySyncActivity {
         [Parameter(Mandatory)] $InputObject
     )
 
+    $ErrorActionPreference = 'Stop'
     $correlationId = Get-InventoryOperationId -Fallback ([string] $InputObject.CorrelationId)
     $configuration = Get-InventorySyncConfiguration -SyncType $SyncType
     if ($SyncType -eq 'AgentBuilder') {

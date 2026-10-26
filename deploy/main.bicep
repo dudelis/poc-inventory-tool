@@ -45,7 +45,7 @@ param maxCreatesPerRun int = 5
 param rpaMaxParallelEnvironments int = 5
 
 @minLength(1)
-param rpaEnvironmentUrlColumn string = 'palp_dataverseurl'
+param rpaEnvironmentUrlColumn string = 'palp_cdsuniquename'
 
 param rpaExcludedSkus string = 'Standard,Teams'
 

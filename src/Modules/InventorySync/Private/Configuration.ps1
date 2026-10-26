@@ -43,7 +43,7 @@ function Get-InventorySyncConfiguration {
         ([string] $Settings['INVENTORY_RPA_ENVIRONMENT_URL_COLUMN']).Trim()
     }
     else {
-        'palp_dataverseurl'
+        'palp_cdsuniquename'
     }
     if ($configuration.RpaEnvironmentUrlColumn -notmatch '^[A-Za-z][A-Za-z0-9_]*$') {
         throw 'INVENTORY_RPA_ENVIRONMENT_URL_COLUMN must be a Dataverse column name.'

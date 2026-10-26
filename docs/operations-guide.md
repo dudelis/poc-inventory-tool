@@ -158,8 +158,8 @@ Examples and historical local defaults below are illustrative.
 | `INVENTORY_AGENT_CREATED_IN` | Agent only | Exact, case-sensitive `properties.createdIn` value used by the tenant-wide Resource Graph Kusto `==` filter. It is not loaded or required by the RPA entry points. Confirm it from real tenant data before enabling the schedule. | `Microsoft 365 Copilot Agent Builder` |
 | `INVENTORY_AGENT_SCHEDULE` | Yes | Six-field NCRONTAB expression used directly by `AgentSyncTimer`. The trigger binding requires it before function code can run. The deployment settings template contains the real daily value; change that app setting to override it. Schedules are UTC unless the Function App platform is configured otherwise. | `0 0 0 * * *` |
 | `INVENTORY_RPA_SCHEDULE` | Yes | Six-field NCRONTAB expression used directly by `RpaSyncTimer`. The deployment settings template contains the real daily value and the app setting remains configurable. | `0 0 0 * * *` |
-| `INVENTORY_RPA_ENVIRONMENT_URL_COLUMN` | No | Logical column name read from `palp_environment` for the source Dataverse base URL. Only a Dataverse-style alphanumeric/underscore logical name is accepted. | `palp_dataverseurl` (default) |
-| `INVENTORY_RPA_EXCLUDED_SKUS` | No | Case-insensitive comma-separated `palp_sku` values skipped by the RPA environment plan. Blank or absent restores the defaults; it does not mean “exclude none.” Skips are logged. | `Standard,Teams` (default) |
+| `INVENTORY_RPA_ENVIRONMENT_URL_COLUMN` | No | Logical column name read from `palp_environment` for the source Dataverse base URL. The customer-provided `palp_CDSUniqueName` column has Web API logical name `palp_cdsuniquename`. Only a Dataverse-style alphanumeric/underscore logical name is accepted. | `palp_cdsuniquename` (default) |
+| `INVENTORY_RPA_EXCLUDED_SKUS` | No | Comma-separated `palp_environmentsku` Choice values or case-insensitive names: `1=Standard`, `2=Sandbox`, `3=Production`, `4=Teams`, `5=Developer`. Uses numeric Choice values, not localized labels. Blank or absent restores the defaults; it does not mean “exclude none.” Skips are logged. | `Standard,Teams` (default) |
 | `INVENTORY_RPA_MAX_PARALLEL_ENVIRONMENTS` | No | Maximum concurrent RPA environment reads. Must be a positive integer. | `10` (default) |
 | `INVENTORY_SYNC_RUN_TABLE` | No | Sync Run Dataverse entity-set name. Blank or absent uses the shipped solution name. | `invs_syncruns` (default) |
 | `INVENTORY_SYNC_LOG_TABLE` | No | Sync Log Dataverse entity-set name. Blank or absent uses the shipped solution name. | `invs_synclogs` (default) |
@@ -235,6 +235,16 @@ After deployment:
 Use a test Dataverse environment and a small, known data set for the first run. Inventory
 changes in Resource Graph can lag by about 15 minutes. Do not start a second copy of the
 same sync while its fixed orchestration instance is active.
+
+A `BlobNotFound` response for the timer's status blob can occur before its first
+scheduled execution. It is not by itself evidence of a failed sync. Inspect the
+orchestrator, activity, and Dataverse Sync Run result rather than only the timer's
+Code + Test log stream. A storage-health `403 AuthorizationPermissionMismatch` is
+a separate authorization problem and must not be dismissed as first-run noise.
+
+Activity trigger bindings use `ActivityInput`, not `Input`: PowerShell reserves
+`$input` as an automatic variable. Both activity wrappers stop on errors so a sync
+error fails the activity instead of being reported as a successful empty result.
 
 ### Agent Builder sync
 
@@ -316,8 +326,8 @@ deployment record.
 | 1. Legacy `palp_komponente` data and `palp_id` behavior | Export representative rows before the first run and confirm no collision with the implemented deterministic name-based GUID derived from environment ID, component type, and source ID. There is no app setting for this algorithm; stop deployment and change the isolated ID function if customer data disproves the assumption. |
 | 2. Representative `palp_environment` data | Validate Default, Teams, developer, deleted/disabled, and normal rows in the target table. Resolve inclusion through `INVENTORY_RPA_EXCLUDED_SKUS`; removed/inactive rows and rows without a URL are skipped by implementation. |
 | 3. Plug-ins, flows, business rules, workflows, and notifications on `palp_komponente` | Inventory and test automations in the target environment, begin with a conservative `INVENTORY_MAX_CREATES_PER_RUN`, inspect Sync Run counts, then raise the cap after approval. |
-| 4. Dataverse URL column | Set `INVENTORY_RPA_ENVIRONMENT_URL_COLUMN` to the confirmed logical column name and populate it with each source environment URL. |
-| 5. Meaning of `Standard` and developer-environment policy | Confirm actual `palp_sku` values with the customer and set the complete comma-separated `INVENTORY_RPA_EXCLUDED_SKUS` list. The implemented default is `Standard,Teams`. |
+| 4. Dataverse URL column | Read each source environment URL from the existing customer column `palp_cdsuniquename` (`palp_CDSUniqueName`). No PALP schema change is needed. For existing deployments, replace any old `palp_dataverseurl` setting with `palp_cdsuniquename`; explicit app settings override the script default. |
+| 5. Meaning of `Standard` and developer-environment policy | Confirm the customer policy for `palp_environmentsku` and set the complete comma-separated `INVENTORY_RPA_EXCLUDED_SKUS` list. The implemented default is `Standard,Teams` (Choice values `1,4`); add `Developer` or `5` to exclude developer environments. |
 | 6. Actual Agent Builder `createdIn` value | Query representative Resource Graph data, copy the exact case-sensitive value into `INVENTORY_AGENT_CREATED_IN`, and verify Found count in the agent smoke run. |
 | 7. Tenant/client/secret/vault/target values | The project lead supplies and the operator configures `INVENTORY_TENANT_ID`, `INVENTORY_CLIENT_ID`, the Key Vault secret and `INVENTORY_CLIENT_SECRET` reference, and `INVENTORY_TARGET_DATAVERSE_URL`. Validate Key Vault reference resolution before deployment. |
 | 8. Resource Graph access role | Assign the read-only Microsoft Entra directory role `Global Reader` to the service principal at tenant scope. This is the least-privilege directory role confirmed for app-only `PowerPlatformResources` queries; subscription-level Azure RBAC `Reader` is not the resolving role. Agent collection is always tenant-wide and has no subscription-scope setting. |

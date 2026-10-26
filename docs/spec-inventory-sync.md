@@ -132,7 +132,7 @@ Rows written by legacy processes (all other component types) are never read, cha
   - Each environment's Dataverse workflow table, filtered to the desktop flow category, covering all states.
   - The owner's Entra object ID is resolved from the owning user or team.
   - If the owner can't be resolved, the row is skipped and logged, because the owner field is required.
-- **Environment list for RPA**: read from `palp_environment` in the target Dataverse. Environments are excluded when they match configured SKUs (default: Standard/Default and Teams), when they're deleted or removed, or when they have no Dataverse URL. The name of the column holding the Dataverse URL is configurable (TBD).
+- **Environment list for RPA**: read from `palp_environment` in the target Dataverse. Environments are excluded when they match configured SKUs (default: Standard/Default and Teams), when they're deleted or removed, or when they have no Dataverse URL. The URL column defaults to the existing customer column `palp_cdsuniquename` (schema name `palp_CDSUniqueName`) and remains configurable.
 
 ### Target schema (existing, `palp_komponente`)
 

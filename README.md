@@ -42,7 +42,7 @@ The app uses `APPLICATIONINSIGHTS_CONNECTION_STRING`; instrumentation-key config
   supplies the daily NCRONTAB value `0 0 0 * * *`)
 - `INVENTORY_RPA_SCHEDULE` (required by the timer binding; the deployment template
   supplies the daily NCRONTAB value `0 0 0 * * *`)
-- `INVENTORY_RPA_ENVIRONMENT_URL_COLUMN` (optional Environment-table URL column, default `palp_dataverseurl`)
+- `INVENTORY_RPA_ENVIRONMENT_URL_COLUMN` (optional Environment-table URL column, default `palp_cdsuniquename`)
 - `INVENTORY_RPA_EXCLUDED_SKUS` (optional comma-separated list, default `Standard,Teams`)
 - `INVENTORY_RPA_MAX_PARALLEL_ENVIRONMENTS` (positive integer, default `10`)
 - `INVENTORY_SYNC_RUN_TABLE` (optional Sync Run entity-set name, default `invs_syncruns`)

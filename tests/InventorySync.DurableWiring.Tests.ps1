@@ -31,6 +31,49 @@ Describe 'Durable orchestrator wiring' {
     }
 }
 
+Describe 'Durable activity entry points' {
+    It 'passes the trigger payload and correlation ID to the <SyncType> sync' -ForEach @(
+        @{ SyncType = 'AgentBuilder'; FunctionName = 'AgentSyncCreateActivity'; SyncCommand = 'Invoke-AgentSync' }
+        @{ SyncType = 'RPA'; FunctionName = 'RpaSyncActivity'; SyncCommand = 'Invoke-RpaSync' }
+    ) {
+        Mock Get-InventorySyncConfiguration -ModuleName InventorySync { @{ SyncType = $SyncType } }
+        Mock Get-InventoryOperationId -ModuleName InventorySync { param($Fallback) $Fallback }
+        Mock $SyncCommand -ModuleName InventorySync { param($CorrelationId) $CorrelationId }
+        $entryPoint = Join-Path $PSScriptRoot "..\src\$FunctionName\run.ps1"
+        $binding = Get-Content (Join-Path $PSScriptRoot "..\src\$FunctionName\function.json") -Raw |
+            ConvertFrom-Json
+        $arguments = @{ $binding.bindings[0].name = @{ CorrelationId = 'timer-correlation' } }
+
+        $result = & $entryPoint @arguments
+
+        $result | Should -Be 'timer-correlation'
+        Should -Invoke $SyncCommand -ModuleName InventorySync -Times 1 -Exactly -ParameterFilter {
+            $CorrelationId -eq 'timer-correlation'
+        }
+    }
+
+    It 'fails the <SyncType> invocation when the trigger payload lacks its correlation ID' -ForEach @(
+        @{ SyncType = 'AgentBuilder'; FunctionName = 'AgentSyncCreateActivity'; SyncCommand = 'Invoke-AgentSync' }
+        @{ SyncType = 'RPA'; FunctionName = 'RpaSyncActivity'; SyncCommand = 'Invoke-RpaSync' }
+    ) {
+        Mock Get-InventorySyncConfiguration -ModuleName InventorySync { @{} }
+        Mock $SyncCommand -ModuleName InventorySync {}
+        $entryPoint = Join-Path $PSScriptRoot "..\src\$FunctionName\run.ps1"
+        $binding = Get-Content (Join-Path $PSScriptRoot "..\src\$FunctionName\function.json") -Raw |
+            ConvertFrom-Json
+        $arguments = @{ $binding.bindings[0].name = [pscustomobject] @{} }
+        $previousPreference = $ErrorActionPreference
+        try {
+            $ErrorActionPreference = 'Continue'
+            { & $entryPoint @arguments } | Should -Throw '*CorrelationId*'
+            Should -Invoke $SyncCommand -ModuleName InventorySync -Times 0 -Exactly
+        }
+        finally {
+            $ErrorActionPreference = $previousPreference
+        }
+    }
+}
+
 Describe 'Durable timer wiring' {
     It 'starts the fixed orchestration instance on the first run, when no instance exists yet' -ForEach @(
         @{
